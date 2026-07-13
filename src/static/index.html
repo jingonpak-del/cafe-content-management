@@ -1,0 +1,1289 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>카페 게시글 감시 시스템</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Malgun Gothic', sans-serif; font-size: 13px; background: #1a1a2e; color: #e0e0e0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* 상단 헤더 */
+  #header { background: #16213e; padding: 8px 16px; display: flex; align-items: center; gap: 12px; border-bottom: 2px solid #0f3460; flex-shrink: 0; }
+  #header h1 { font-size: 15px; color: #e94560; font-weight: bold; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+  .badge-green { background: #1a472a; color: #4ade80; }
+  .badge-red { background: #7f1d1d; color: #fca5a5; }
+  .badge-blue { background: #1e3a5f; color: #93c5fd; }
+  .badge-yellow { background: #4a3200; color: #fcd34d; }
+  #header .spacer { flex: 1; }
+  #header button { padding: 4px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 12px; }
+  .btn-primary { background: #e94560; color: white; }
+  .btn-primary:hover { background: #c73652; }
+  .btn-secondary { background: #0f3460; color: #93c5fd; }
+  .btn-secondary:hover { background: #1a4a7a; }
+  .btn-success { background: #1a472a; color: #4ade80; }
+  .btn-success:hover { background: #166534; }
+  .btn-danger { background: #7f1d1d; color: #fca5a5; }
+
+  /* 메인 2분할 */
+  #main { display: flex; flex: 1; overflow: hidden; }
+
+  /* 좌측 패널 */
+  #left-panel { width: 55%; display: flex; flex-direction: column; border-right: 2px solid #0f3460; overflow: hidden; }
+  #left-header { background: #16213e; padding: 8px 12px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  #left-header span { font-weight: bold; color: #93c5fd; }
+  #left-search { flex: 1; background: #0f3460; border: 1px solid #1a4a7a; color: #e0e0e0; padding: 4px 8px; border-radius: 4px; font-size: 12px; }
+  #left-search::placeholder { color: #666; }
+  #left-filter { background: #0f3460; border: 1px solid #1a4a7a; color: #e0e0e0; padding: 4px; border-radius: 4px; font-size: 12px; }
+  #article-list { flex: 1; overflow-y: auto; }
+
+  /* 우측 패널 */
+  #right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #right-tabs { background: #16213e; display: flex; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  .tab { padding: 8px 14px; cursor: pointer; font-size: 12px; color: #888; border-bottom: 2px solid transparent; }
+  .tab:hover { color: #e0e0e0; }
+  .tab.active { color: #e94560; border-bottom-color: #e94560; font-weight: bold; }
+  .tab-badge { background: #e94560; color: white; border-radius: 8px; padding: 1px 5px; font-size: 10px; margin-left: 4px; }
+  #right-content { flex: 1; overflow-y: auto; }
+
+  /* 게시글 행 */
+  .article-row { padding: 8px 12px; border-bottom: 1px solid #1a2a4a; cursor: pointer; transition: background 0.1s; display: flex; align-items: flex-start; gap: 8px; }
+  .article-row:hover { background: #1e2f4f; }
+  .article-row.selected { background: #1e3a5f; }
+  .article-row.deleted { opacity: 0.6; }
+  .article-main { flex: 1; min-width: 0; }
+  .article-title { font-size: 13px; color: #e0e0e0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .article-title.changed { color: #fcd34d; }
+  .article-meta { font-size: 11px; color: #666; margin-top: 2px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .article-counts { font-size: 11px; color: #888; white-space: nowrap; text-align: right; }
+  .article-counts div { margin-bottom: 1px; }
+  .flag-icons { display: flex; gap: 3px; margin-top: 2px; }
+  .flag { font-size: 11px; padding: 1px 5px; border-radius: 3px; }
+  .flag-delete { background: #7f1d1d; color: #fca5a5; }
+  .flag-title { background: #4a3200; color: #fcd34d; }
+  .flag-keyword { background: #1a3a5c; color: #93c5fd; }
+  .company-badge { background: #1a472a; color: #4ade80; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+  .level-badge { background: #2a2352; color: #b9a5ff; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+  .tag-badge { color: #556; font-size: 10px; }
+  .board-badge { background: #16302a; color: #6ee7b7; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+
+  /* 이상감지 행 */
+  .flagged-row { padding: 10px 12px; border-bottom: 1px solid #1a2a4a; cursor: pointer; }
+  .flagged-row:hover { background: #1e2f4f; }
+  .flagged-row.reviewed { opacity: 0.45; background: #12161f; }
+  .flagged-row.reviewed:hover { opacity: 0.7; }
+  .review-chk { width: 16px; height: 16px; cursor: pointer; accent-color: #4ade80; flex-shrink: 0; margin-top: 2px; }
+  .flagged-title { font-size: 13px; margin-bottom: 4px; }
+  .flagged-detail { font-size: 11px; color: #888; display: flex; gap: 8px; flex-wrap: wrap; }
+  .flagged-change { font-size: 11px; color: #fcd34d; margin: 3px 0; padding: 4px 8px; background: #1a1a00; border-left: 3px solid #fcd34d; border-radius: 2px; }
+  .flagged-keyword { font-size: 11px; color: #93c5fd; margin: 3px 0; padding: 4px 8px; background: #001a2a; border-left: 3px solid #93c5fd; border-radius: 2px; }
+
+  /* 상세 패널 */
+  #detail-panel { position: fixed; top: 0; right: 0; width: 480px; height: 100%; background: #16213e; border-left: 2px solid #0f3460; z-index: 100; display: none; flex-direction: column; }
+  #detail-panel.open { display: flex; }
+  #detail-header { padding: 12px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+  #detail-body { flex: 1; overflow-y: auto; padding: 12px; }
+  #detail-close { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; }
+  #detail-close:hover { color: white; }
+
+  /* 업체 창 */
+  #company-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
+  #company-modal.open { display: flex; }
+  #company-box { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; width: 800px; max-height: 85vh; display: flex; flex-direction: column; }
+  #company-box-header { padding: 12px 16px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+  #company-box-body { flex: 1; overflow-y: auto; padding: 12px; }
+
+  /* 글관리 창 */
+  #writer-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
+  #writer-modal.open { display: flex; }
+  #writer-box { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; width: 1000px; max-width: 95vw; height: 85vh; display: flex; flex-direction: column; }
+  #writer-box-header { padding: 12px 16px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+  #writer-box-body { flex: 1; display: flex; overflow: hidden; }
+  #wr-list-panel { width: 280px; border-right: 1px solid #0f3460; overflow-y: auto; flex-shrink: 0; }
+  #wr-articles-panel { flex: 1; overflow-y: auto; }
+  .wr-item { padding: 8px 12px; border-bottom: 1px solid #1a2a4a; cursor: pointer; }
+  .wr-item:hover { background: #1e2f4f; }
+  .wr-item.selected { background: #1e3a5f; }
+  .wr-status { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+  .wr-status-normal { background: #1a472a; color: #4ade80; }
+  .wr-status-changed { background: #4a3200; color: #fcd34d; }
+  .wr-status-deleted { background: #7f1d1d; color: #fca5a5; }
+
+  /* 설정 창 */
+  #settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
+  #settings-modal.open { display: flex; }
+  #settings-box { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; width: 520px; max-height: 85vh; overflow-y: auto; padding: 0; }
+  #settings-box-header { padding: 12px 16px; border-bottom: 1px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+  #settings-box-body { padding: 16px; }
+
+  /* 폼 */
+  .form-group { margin-bottom: 14px; }
+  .form-label { display: block; font-size: 12px; color: #93c5fd; margin-bottom: 4px; }
+  .form-input { width: 100%; background: #0f3460; border: 1px solid #1a4a7a; color: #e0e0e0; padding: 6px 10px; border-radius: 4px; font-size: 13px; }
+  .form-input:focus { outline: none; border-color: #e94560; }
+  .form-row { display: flex; gap: 8px; }
+  .form-row .form-group { flex: 1; }
+
+  /* 테이블 */
+  .data-table { width: 100%; border-collapse: collapse; }
+  .data-table th { background: #0f3460; padding: 8px 10px; text-align: left; font-size: 12px; color: #93c5fd; position: sticky; top: 0; }
+  .data-table td { padding: 8px 10px; border-bottom: 1px solid #1a2a4a; font-size: 12px; }
+  .data-table tr:hover td { background: #1e2f4f; }
+
+  /* 섹션 */
+  .section-title { font-size: 12px; color: #93c5fd; font-weight: bold; padding: 8px 12px; background: #0d1b2e; }
+  .empty-msg { text-align: center; color: #555; padding: 32px; font-size: 13px; }
+
+  /* 스크롤바 */
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-track { background: #0d1b2e; }
+  ::-webkit-scrollbar-thumb { background: #0f3460; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #1a4a7a; }
+
+  /* 알림 토스트 */
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #0f3460; color: #e0e0e0; padding: 10px 20px; border-radius: 6px; border: 1px solid #1a4a7a; z-index: 999; display: none; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<!-- 헤더 -->
+<div id="header">
+  <h1>📡 카페 게시글 감시</h1>
+  <span id="hd-cafe" class="badge badge-blue">카페 미설정</span>
+  <span id="hd-session" class="badge badge-red">세션 없음</span>
+  <span id="hd-count" class="badge badge-blue">0건</span>
+  <span id="hd-watcher" class="badge badge-red">감시 중지</span>
+  <div class="spacer"></div>
+  <button class="btn-success" id="btn-watcher-toggle" onclick="toggleWatcher()">▶ 감시 시작</button>
+  <button class="btn-secondary" onclick="openCompanyModal()">📊 업체 현황</button>
+  <button class="btn-secondary" onclick="openWriterModal()">📝 글관리</button>
+  <button class="btn-secondary" onclick="openSettings()">⚙ 설정</button>
+</div>
+
+<!-- 메인 2분할 -->
+<div id="main">
+
+  <!-- 좌측: 전체 게시글 -->
+  <div id="left-panel">
+    <div id="left-header" style="flex-wrap:wrap">
+      <span>전체 게시글</span>
+      <input id="left-search" type="text" placeholder="제목/작성자 검색..." oninput="debounceSearch()" style="min-width:140px">
+      <select id="left-cafe" onchange="onCafeFilterChange()">
+        <option value="0">전체 카페</option>
+      </select>
+      <select id="left-board" onchange="loadArticles()">
+        <option value="-1">전체 게시판</option>
+      </select>
+      <select id="left-filter" onchange="loadArticles()">
+        <option value="">전체</option>
+        <option value="active">활성</option>
+        <option value="deleted">삭제됨</option>
+      </select>
+    </div>
+    <div id="article-list">
+      <div class="empty-msg">게시글을 불러오는 중...</div>
+    </div>
+  </div>
+
+  <!-- 우측: 이상 감지 -->
+  <div id="right-panel">
+    <div id="right-tabs">
+      <div class="tab active" data-tab="all" onclick="switchTab('all')">전체 <span class="tab-badge" id="cnt-all">0</span></div>
+      <div class="tab" data-tab="title_changed" onclick="switchTab('title_changed')">제목변경 <span class="tab-badge" id="cnt-title">0</span></div>
+      <div class="tab" data-tab="deleted" onclick="switchTab('deleted')">삭제 <span class="tab-badge" id="cnt-del">0</span></div>
+      <div class="tab" data-tab="keyword" onclick="switchTab('keyword')">키워드 <span class="tab-badge" id="cnt-kw">0</span></div>
+    </div>
+    <div id="right-content">
+      <div class="empty-msg">이상 감지 항목 없음</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 상세 패널 -->
+<div id="detail-panel">
+  <div id="detail-header">
+    <span style="font-weight:bold;color:#93c5fd">게시글 상세</span>
+    <button id="detail-close" onclick="closeDetail()">✕</button>
+  </div>
+  <div id="detail-body"></div>
+</div>
+
+<!-- 업체 현황 모달 -->
+<div id="company-modal">
+  <div id="company-box">
+    <div id="company-box-header">
+      <span style="font-weight:bold;color:#4ade80">📊 업체 현황</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn-secondary" onclick="openMappingEdit()">매핑 관리</button>
+        <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeCompanyModal()">✕</button>
+      </div>
+    </div>
+    <div style="padding:10px 16px;border-bottom:1px solid #0f3460;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#0d1b2e">
+      <span style="font-size:12px;color:#93c5fd">작성일 기준</span>
+      <input type="date" id="comp-start" class="form-input" style="width:auto;padding:4px 8px">
+      <span style="color:#888">~</span>
+      <input type="date" id="comp-end" class="form-input" style="width:auto;padding:4px 8px">
+      <button class="btn-success" onclick="loadCompanyStats()">🔍 조회</button>
+      <button class="btn-secondary" onclick="setCompRange(7)">최근7일</button>
+      <button class="btn-secondary" onclick="setCompRange(30)">최근30일</button>
+      <button class="btn-secondary" onclick="setCompRange(0)">전체</button>
+      <span id="comp-range-info" style="font-size:12px;color:#888;margin-left:auto"></span>
+    </div>
+    <div id="company-box-body">
+      <div class="empty-msg">업체 데이터 없음</div>
+    </div>
+  </div>
+</div>
+
+<!-- 글관리 모달 -->
+<div id="writer-modal">
+  <div id="writer-box">
+    <div id="writer-box-header">
+      <span style="font-weight:bold;color:#93c5fd">📝 글관리 — 작성자별 게시글 추적</span>
+      <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeWriterModal()">✕</button>
+    </div>
+    <!-- 검색바 -->
+    <div style="padding:10px 16px;border-bottom:1px solid #0f3460;display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0d1b2e">
+      <select id="wr-idtype" class="form-input" style="width:auto;padding:4px 8px">
+        <option value="0">아이디</option>
+        <option value="1">닉네임</option>
+        <option value="3">멤버코드</option>
+      </select>
+      <select id="wr-cafe" class="form-input" style="width:auto;padding:4px 8px">
+        <option value="0">전체 카페</option>
+      </select>
+      <input id="wr-keyword" class="form-input" style="width:200px;padding:4px 8px" placeholder="검색어 입력" onkeydown="if(event.key==='Enter')searchWriter()">
+      <button class="btn-success" onclick="searchWriter()">🔍 검색</button>
+      <span id="wr-search-info" style="font-size:12px;color:#888"></span>
+    </div>
+    <div id="wr-search-result" style="padding:0 16px"></div>
+    <!-- 본문: 좌 등록목록 / 우 게시글 -->
+    <div id="writer-box-body">
+      <div id="wr-list-panel">
+        <div class="section-title" style="margin:0">등록 작성자</div>
+        <div id="wr-list"></div>
+      </div>
+      <div id="wr-articles-panel">
+        <div id="wr-articles"><div class="empty-msg">왼쪽에서 작성자를 선택하세요</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 설정 모달 -->
+<div id="settings-modal">
+  <div id="settings-box">
+    <div id="settings-box-header">
+      <span style="font-weight:bold;color:#93c5fd">⚙ 설정</span>
+      <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeSettings()">✕</button>
+    </div>
+    <div id="settings-box-body">
+
+      <div class="section-title">카페 설정</div>
+      <div style="padding:12px">
+        <div id="cafe-list" style="margin-bottom:10px"></div>
+        <div style="background:#0d1b2e;border-radius:6px;padding:10px;border:1px solid #1a2a4a">
+          <div style="font-size:11px;color:#93c5fd;margin-bottom:8px">+ 카페 추가</div>
+          <div class="form-row">
+            <div class="form-group" style="margin-bottom:0;flex:2">
+              <input class="form-input" id="s-cafe-url" type="text" placeholder="카페 URL (예: masanmam)">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <input class="form-input" id="s-cafe-name" type="text" placeholder="표시명">
+            </div>
+            <button class="btn-secondary" style="white-space:nowrap" onclick="resolveCafe()">ID 조회</button>
+          </div>
+          <div class="form-row" style="margin-top:6px">
+            <div class="form-group" style="margin-bottom:0">
+              <input class="form-input" id="s-cafe-id" type="number" placeholder="카페 ID (자동)">
+            </div>
+            <div class="form-group" style="margin-bottom:0">
+              <input class="form-input" id="s-menu-id" type="number" value="0" placeholder="메뉴ID(0=전체)">
+            </div>
+            <button class="btn-success" style="white-space:nowrap" onclick="addCafe()">추가</button>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:10px">
+          <label class="form-label">크롤링 간격 (초)</label>
+          <input class="form-input" id="s-tick" type="number" value="1.5" step="0.5" min="1">
+        </div>
+      </div>
+
+      <div class="section-title">네이버 로그인 세션</div>
+      <div style="padding:12px">
+        <div class="form-group">
+          <label class="form-label">네이버 계정 ID</label>
+          <input class="form-input" id="s-account-id" type="text" placeholder="네이버 로그인 ID">
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button class="btn-secondary" id="btn-cap-start" onclick="captureStart()">🔑 로그인 창 열기</button>
+          <button class="btn-success" id="btn-cap-finish" onclick="captureFinish()" style="display:none">✓ 로그인 완료</button>
+          <button class="btn-secondary" onclick="checkSessionStatus(true)">🔄 세션 상태 확인</button>
+        </div>
+        <div id="session-status-text" style="font-size:12px;color:#888;margin-top:8px">상태 확인 중...</div>
+        <div id="capture-guide" style="display:none;font-size:12px;color:#fcd34d;margin-top:8px;padding:8px;background:#1a1a00;border-radius:4px;line-height:1.5">
+          ① 열린 <b>Chrome 창</b>에서 네이버에 로그인하세요 (캡차·2단계 인증 통과).<br>
+          ② 로그인이 끝나면 위의 <b>[✓ 로그인 완료]</b> 버튼을 누르세요.<br>
+          <span style="color:#888">※ 이 버튼은 서버 PC에서 브라우저를 엽니다. 원격 접속 중이라면 서버 PC 화면에서 진행해야 합니다.</span>
+        </div>
+      </div>
+
+      <div class="section-title">구글시트 업체 매칭 (ID → 업체명)</div>
+      <div style="padding:12px">
+        <div class="form-group">
+          <label class="form-label">스프레드시트 ID</label>
+          <input class="form-input" id="s-sheet-id" type="text" placeholder="docs.google.com/spreadsheets/d/[이부분]/edit">
+        </div>
+        <div class="form-row">
+          <div class="form-group" style="flex:0 0 120px">
+            <label class="form-label">gid (탭)</label>
+            <input class="form-input" id="s-sheet-gid" type="text" placeholder="0">
+          </div>
+          <div class="form-group" style="display:flex;align-items:flex-end;gap:6px">
+            <button class="btn-secondary" onclick="saveSheetConfig()">시트 저장</button>
+            <button class="btn-success" onclick="syncSheetNow()">📋 지금 동기화</button>
+          </div>
+        </div>
+        <div id="sheet-status" style="font-size:12px;color:#888;margin-top:4px">B열=네이버ID, C열=업체명 · 링크공유(뷰어)로 열어두세요</div>
+      </div>
+
+      <div class="section-title">키워드 관리</div>
+      <div style="padding:12px">
+        <div class="form-row" style="margin-bottom:8px">
+          <input class="form-input" id="new-keyword" type="text" placeholder="감시 키워드 입력" onkeydown="if(event.key==='Enter')addKeyword()">
+          <button class="btn-primary" onclick="addKeyword()">+ 추가</button>
+        </div>
+        <div id="keyword-list"></div>
+      </div>
+
+      <div style="padding:12px;display:flex;gap:8px;justify-content:flex-end;border-top:1px solid #0f3460;margin-top:8px">
+        <button class="btn-secondary" onclick="closeSettings()">취소</button>
+        <button class="btn-primary" onclick="saveSettings()">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 토스트 -->
+<div id="toast"></div>
+
+<script>
+// ── 상태 ──────────────────────────────────────────────────────────────────────
+let stats = { total:0, deleted:0, title_changed:0, keyword_hit:0 };
+let currentTab = 'all';
+let articleOffset = 0;
+let flaggedOffset = 0;
+let articleSearch = '';
+let articleStatus = '';
+let searchTimer = null;
+let ws = null;
+
+// ── WebSocket ─────────────────────────────────────────────────────────────────
+function connectWS() {
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';   // HTTPS면 wss (혼합콘텐츠 차단 방지)
+    ws = new WebSocket(`${proto}//${location.host}/ws`);
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data);
+      handleWSEvent(msg);
+    };
+    ws.onclose = () => setTimeout(connectWS, 3000);
+  } catch (e) {
+    console.warn('WS connect failed', e);   // 실패해도 초기 로딩(stats/articles)은 계속
+  }
+}
+
+function handleWSEvent(msg) {
+  if (msg.type === 'new_article') {
+    prependArticleRow(msg);
+    updateStats();
+    showToast(`📌 새 글: ${msg.title.substring(0,30)}`);
+  } else if (msg.type === 'title_changed') {
+    updateStats();
+    loadFlagged();
+    updateArticleRow(msg.article_id, {title_changed: 1});
+    showToast(`🔄 제목 변경 [${msg.phase}]: ${msg.old_title.substring(0,20)} → ${msg.new_title.substring(0,20)}`);
+  } else if (msg.type === 'deleted') {
+    updateStats();
+    loadFlagged();
+    updateArticleRow(msg.article_id, {status: 'deleted'});
+    showToast(`🗑 삭제 감지: article ${msg.article_id}`);
+  } else if (msg.type === 'session') {
+    updateSessionBadge(msg.ok);
+  } else if (msg.type === 'watcher_status') {
+    updateWatcherBadge(msg.running);
+  } else if (msg.type === 'state') {
+    updateSessionBadge(msg.session_ok);
+    updateWatcherBadge(msg.running);
+  }
+}
+
+// ── 통계 ──────────────────────────────────────────────────────────────────────
+async function updateStats() {
+  const r = await fetch('/api/stats');
+  stats = await r.json();
+  document.getElementById('hd-count').textContent = `${stats.total}건`;
+  const cafeNames = (stats.cafe_names || []).map(c => c.name).join(', ');
+  document.getElementById('hd-cafe').textContent = cafeNames || '카페 미설정';
+  document.getElementById('cnt-all').textContent =
+    stats.deleted + stats.title_changed + stats.keyword_hit;
+  document.getElementById('cnt-title').textContent = stats.title_changed;
+  document.getElementById('cnt-del').textContent = stats.deleted;
+  document.getElementById('cnt-kw').textContent = stats.keyword_hit;
+  updateSessionBadge(stats.session_ok);
+  updateWatcherBadge(stats.running);
+}
+
+function updateSessionBadge(ok) {
+  const el = document.getElementById('hd-session');
+  el.textContent = ok ? '✓ 로그인 세션 유효' : '✗ 세션 만료/없음';
+  el.className = 'badge ' + (ok ? 'badge-green' : 'badge-red');
+  el.style.cursor = 'pointer';
+  el.title = '클릭하면 세션 상태를 다시 확인합니다';
+  el.onclick = async () => {
+    const d = await fetch('/api/session/status?live=true').then(r => r.json());
+    updateSessionBadge(d.ok);
+    showToast(d.ok ? `세션 유효: ${d.account_id}` : `세션 만료: ${d.reason}`);
+  };
+}
+
+function updateWatcherBadge(running) {
+  const el = document.getElementById('hd-watcher');
+  const btn = document.getElementById('btn-watcher-toggle');
+  if (running) {
+    el.textContent = '🟢 감시 중'; el.className = 'badge badge-green';
+    btn.textContent = '⏹ 감시 중지'; btn.className = 'btn-danger';
+  } else {
+    el.textContent = '⏸ 감시 중지'; el.className = 'badge badge-red';
+    btn.textContent = '▶ 감시 시작'; btn.className = 'btn-success';
+  }
+}
+
+// ── 카페/게시판 필터 ──────────────────────────────────────────────────────────
+async function loadCafeFilter() {
+  const s = await fetch('/api/stats').then(r=>r.json());
+  const sel = document.getElementById('left-cafe');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="0">전체 카페</option>' +
+    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
+  sel.value = cur;
+  loadBoardFilter();
+}
+
+async function loadBoardFilter() {
+  const cafeId = document.getElementById('left-cafe').value;
+  const rows = await fetch('/api/boards?cafe_id=' + cafeId).then(r=>r.json());
+  const sel = document.getElementById('left-board');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="-1">전체 게시판</option>' +
+    rows.map(b=>`<option value="${b.menu_id}">${esc(b.menu_name)} (${b.cnt})</option>`).join('');
+  // 카페 바뀌면 게시판 초기화
+  if (![...sel.options].some(o=>o.value===cur)) sel.value = '-1';
+  else sel.value = cur;
+}
+
+function onCafeFilterChange() {
+  loadBoardFilter().then(() => loadArticles());
+}
+
+// ── 게시글 목록 ───────────────────────────────────────────────────────────────
+async function loadArticles(reset = true) {
+  if (reset) { articleOffset = 0; }
+  articleStatus = document.getElementById('left-filter').value;
+  const cafeId = document.getElementById('left-cafe').value;
+  const menuId = document.getElementById('left-board').value;
+  const q = encodeURIComponent(articleSearch);
+  const r = await fetch(`/api/articles?search=${q}&status=${articleStatus}&cafe_id=${cafeId}&menu_id=${menuId}&limit=80&offset=${articleOffset}`);
+  const data = await r.json();
+  const el = document.getElementById('article-list');
+  if (reset) el.innerHTML = '';
+  if (data.rows.length === 0 && reset) {
+    el.innerHTML = '<div class="empty-msg">게시글 없음</div>';
+    return;
+  }
+  data.rows.forEach(a => el.appendChild(makeArticleRow(a)));
+  articleOffset += data.rows.length;
+}
+
+function makeArticleRow(a) {
+  const div = document.createElement('div');
+  div.className = 'article-row' + (a.status === 'deleted' ? ' deleted' : '');
+  div.dataset.id = a.article_id;
+  div.onclick = () => openDetail(a.cafe_id, a.article_id);
+
+  const flags = [];
+  if (a.status === 'deleted') flags.push('<span class="flag flag-delete">삭제</span>');
+  if (a.title_changed) flags.push('<span class="flag flag-title">제목변경</span>');
+  if (a.has_keyword_hit) flags.push('<span class="flag flag-keyword">키워드</span>');
+
+  const company = a.company_name ? `<span class="company-badge">🏢 ${esc(a.company_name)}</span>` : '';
+  const level = a.member_level ? `<span class="level-badge">${esc(a.member_level)}</span>` : '';
+  const tag = a.member_tag ? `<span class="tag-badge">#${esc(a.member_tag)}</span>` : '';
+  const cafeBadge = a.cafe_name ? `<span style="color:#4a6fa5;font-size:11px">[${esc(a.cafe_name)}]</span>` : '';
+  const boardBadge = a.menu_name ? `<span class="board-badge">📋 ${esc(a.menu_name)}</span>` : '';
+  const titleClass = a.title_changed ? 'article-title changed' : 'article-title';
+  const displayTitle = esc(a.current_title || a.title || '(제목없음)');
+
+  div.innerHTML = `
+    <div class="article-main">
+      <div class="${titleClass}">${cafeBadge} ${displayTitle}</div>
+      <div class="article-meta">
+        ${boardBadge}
+        <span>${esc(a.writer_nickname || '')}</span>
+        ${level}
+        ${company}
+        ${tag}
+        <span style="color:#555">${a.write_str || ''}</span>
+      </div>
+      <div class="flag-icons">${flags.join('')}</div>
+    </div>
+    <div class="article-counts">
+      <div>👁 ${fmtNum(a.cur_read)}</div>
+      <div>💬 ${fmtNum(a.cur_comment)}</div>
+      <div>❤ ${fmtNum(a.cur_like)}</div>
+    </div>`;
+  return div;
+}
+
+function prependArticleRow(msg) {
+  const list = document.getElementById('article-list');
+  const emptyMsg = list.querySelector('.empty-msg');
+  if (emptyMsg) emptyMsg.remove();
+  const fakeArticle = {
+    cafe_id: msg.cafe_id, article_id: msg.article_id, cafe_name: msg.cafe_name,
+    menu_name: msg.menu_name,
+    title: msg.title, current_title: msg.title,
+    writer_nickname: msg.writer_nickname,
+    company_name: msg.company_name, member_tag: msg.member_tag, member_level: msg.member_level,
+    cur_read: msg.read_count, cur_comment: msg.comment_count, cur_like: msg.like_count,
+    write_str: '방금', status: 'active', title_changed: 0,
+    has_keyword_hit: msg.has_keyword_hit,
+  };
+  list.prepend(makeArticleRow(fakeArticle));
+}
+
+function updateArticleRow(article_id, changes) {
+  // 간단히 전체 새로고침 대신 DOM에서 해당 행 배지만 업데이트
+  loadArticles();
+}
+
+function debounceSearch() {
+  clearTimeout(searchTimer);
+  articleSearch = document.getElementById('left-search').value;
+  searchTimer = setTimeout(() => loadArticles(), 350);
+}
+
+// ── 이상 감지 목록 ────────────────────────────────────────────────────────────
+async function loadFlagged(reset = true) {
+  if (reset) flaggedOffset = 0;
+  const r = await fetch(`/api/flagged?type=${currentTab}&limit=80&offset=${flaggedOffset}`);
+  const data = await r.json();
+  const el = document.getElementById('right-content');
+  if (reset) el.innerHTML = '';
+  if (data.rows.length === 0 && reset) {
+    el.innerHTML = '<div class="empty-msg">이상 감지 항목 없음</div>';
+    return;
+  }
+  data.rows.forEach(a => el.appendChild(makeFlaggedRow(a)));
+  flaggedOffset += data.rows.length;
+}
+
+function makeFlaggedRow(a) {
+  const div = document.createElement('div');
+  div.className = 'flagged-row' + (a.reviewed ? ' reviewed' : '');
+
+  const flags = [];
+  if (a.status === 'deleted') flags.push('<span class="flag flag-delete">삭제됨</span>');
+  if (a.title_changed) flags.push('<span class="flag flag-title">제목변경</span>');
+  if (a.has_keyword_hit) flags.push('<span class="flag flag-keyword">키워드히트</span>');
+  const company = a.company_name ? `<span class="company-badge">${esc(a.company_name)}</span>` : '';
+  const naverId = a.naver_id ? ` (${esc(a.naver_id)})` : '';
+  const cafeBadge = a.cafe_name ? `<span style="color:#4a6fa5;font-size:11px">[${esc(a.cafe_name)}]</span> ` : '';
+
+  let extras = '';
+  if (a.title_changed && a.title !== a.current_title) {
+    extras += `<div class="flagged-change">📝 "${esc(a.title)}" → "${esc(a.current_title)}"</div>`;
+  }
+  if (a.hit_keywords) {
+    extras += `<div class="flagged-keyword">🔍 키워드: ${esc(a.hit_keywords)}</div>`;
+  }
+
+  div.innerHTML = `
+    <div style="display:flex;gap:8px;align-items:flex-start">
+      <input type="checkbox" class="review-chk" ${a.reviewed?'checked':''}
+             title="확인 완료로 표시 (하단으로 이동)"
+             onclick="event.stopPropagation(); toggleReview(${a.cafe_id}, ${a.article_id}, this.checked)">
+      <div style="flex:1;min-width:0;cursor:pointer" onclick="openDetail(${a.cafe_id}, ${a.article_id})">
+        <div class="flagged-title">
+          ${cafeBadge}<span style="color:${a.status==='deleted'?'#fca5a5':a.title_changed?'#fcd34d':'#e0e0e0'}">${esc(a.current_title || a.title)}</span>
+          ${flags.join(' ')}
+        </div>
+        ${extras}
+        <div class="flagged-detail">
+          <span>${esc(a.writer_nickname)}${a.member_tag?` <span class="tag-badge">#${esc(a.member_tag)}</span>`:''}${naverId}</span>
+          ${company}
+          <span title="이상 발견 시각" style="color:#e94560">🕒 ${a.flag_str || a.write_str || ''}</span>
+          <a href="${a.url}" target="_blank" style="color:#4ade80;text-decoration:none" onclick="event.stopPropagation()">↗ 원문</a>
+        </div>
+      </div>
+    </div>`;
+  return div;
+}
+
+async function toggleReview(cafe_id, article_id, reviewed) {
+  await fetch('/api/flagged/review', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cafe_id, article_id, reviewed}),
+  });
+  // 재정렬 반영 (확인 시 하단으로, 해제 시 상단으로)
+  loadFlagged();
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  loadFlagged();
+}
+
+// ── 상세 패널 ─────────────────────────────────────────────────────────────────
+async function openDetail(cafe_id, article_id) {
+  const r = await fetch(`/api/articles/${cafe_id}/${article_id}`);
+  if (!r.ok) return;
+  const a = await r.json();
+  const panel = document.getElementById('detail-panel');
+  const body = document.getElementById('detail-body');
+
+  const naverId = a.naver_id ? `<br><span style="color:#888;font-size:12px">ID: ${esc(a.naver_id)}</span>` : '';
+  const company = a.company_name ? `<span class="company-badge">${esc(a.company_name)}</span>` : '';
+
+  let histHTML = '';
+  if (a.timeline && a.timeline.length > 0) {
+    histHTML = `<div class="section-title" style="margin:12px -12px 0">📜 상태 이력 (작성 → 변경 → 삭제)</div>
+      <div style="padding:8px 4px">`;
+    a.timeline.forEach((t, i) => {
+      const isLast = i === a.timeline.length - 1;
+      let icon, color, label;
+      if (t.type==='created') { icon='📝'; color='#4ade80'; label='작성'; }
+      else if (t.type==='title_changed') { icon='🟡'; color='#fcd34d'; label='제목변경'+(t.phase?` (${esc(t.phase)})`:''); }
+      else { icon='🔴'; color='#fca5a5'; label='삭제'; }
+      histHTML += `<div style="display:flex;gap:8px;padding:4px 0">
+        <div style="display:flex;flex-direction:column;align-items:center">
+          <span>${icon}</span>
+          ${!isLast?'<div style="width:1px;flex:1;background:#0f3460;margin:2px 0"></div>':''}
+        </div>
+        <div style="flex:1;padding-bottom:6px">
+          <div style="font-size:12px;color:${color};font-weight:bold">${label} <span style="color:#666;font-weight:normal">${esc(t.str||'')}</span></div>
+          ${t.type==='title_changed' ? `<div style="font-size:12px;color:#aaa">"${esc(t.old)}"</div><div style="font-size:12px;color:#fcd34d">→ "${esc(t.text)}"</div>` : (t.text?`<div style="font-size:12px;color:#aaa">"${esc(t.text)}"</div>`:'')}
+        </div>
+      </div>`;
+    });
+    histHTML += `</div>`;
+  }
+
+  let kwHTML = '';
+  if (a.keyword_hits && a.keyword_hits.length > 0) {
+    kwHTML = `<div class="section-title" style="margin:12px -12px 0">키워드 히트</div>`;
+    a.keyword_hits.forEach(h => {
+      kwHTML += `<div style="padding:6px;margin:3px 0;background:#001a2a;border-radius:4px;font-size:12px">
+        <span style="color:#93c5fd">[${esc(h.keyword_text)}]</span>
+        <span style="color:#888"> ${esc(h.hit_location)} (${esc(h.check_phase)})</span>
+        <div style="color:#aaa;margin-top:2px">…${esc(h.hit_snippet)}…</div>
+      </div>`;
+    });
+  }
+
+  let cmtHTML = '';
+  if (a.comments && a.comments.length > 0) {
+    cmtHTML = `<div class="section-title" style="margin:12px -12px 0">댓글 (${a.comments.length})</div>`;
+    a.comments.forEach(c => {
+      if (c.is_deleted) return;
+      cmtHTML += `<div style="padding:6px 8px;border-bottom:1px solid #1a2a4a;font-size:12px">
+        <span style="color:#93c5fd">${esc(c.writer_nickname)}</span>
+        <span style="color:#aaa;margin-left:8px">${esc(c.content)}</span>
+      </div>`;
+    });
+  }
+
+  body.innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="font-size:14px;font-weight:bold;color:#e0e0e0;margin-bottom:6px">${esc(a.current_title || a.title)}</div>
+      ${a.title_changed ? `<div style="font-size:12px;color:#fcd34d;margin-bottom:4px">최초: ${esc(a.title)}</div>` : ''}
+      <div style="font-size:12px;color:#888">${esc(a.writer_nickname)}${a.member_tag?` <span class="tag-badge">#${esc(a.member_tag)}</span>`:''}${naverId} ${company}</div>
+      ${a.menu_name ? `<div style="font-size:12px;margin-top:4px"><span class="board-badge">📋 ${esc(a.menu_name)}</span></div>` : ''}
+      <div style="font-size:12px;color:#666;margin-top:4px">${a.write_str || ''}</div>
+      <div style="margin-top:8px;display:flex;gap:12px;font-size:12px">
+        <span>👁 ${fmtNum(a.cur_read)}</span><span>💬 ${fmtNum(a.cur_comment)}</span><span>❤ ${fmtNum(a.cur_like)}</span>
+      </div>
+      <div style="margin-top:8px">
+        <a href="${a.url}" target="_blank" style="color:#4ade80;font-size:12px">↗ 원문 보기</a>
+      </div>
+    </div>
+    ${histHTML}
+    ${kwHTML}
+    ${cmtHTML}
+    ${a.content_text ? `<div class="section-title" style="margin:12px -12px 0">본문</div>
+    <div style="font-size:12px;color:#aaa;padding:8px;white-space:pre-wrap;max-height:300px;overflow-y:auto;background:#0d1b2e;border-radius:4px;margin-top:4px">${esc(a.content_text.substring(0,2000))}</div>` : ''}
+  `;
+  panel.classList.add('open');
+}
+
+function closeDetail() {
+  document.getElementById('detail-panel').classList.remove('open');
+}
+
+// ── 업체 현황 ─────────────────────────────────────────────────────────────────
+function openCompanyModal() {
+  document.getElementById('company-modal').classList.add('open');
+  loadCompanyStats();
+}
+
+function setCompRange(days) {
+  const end = new Date();
+  const start = new Date();
+  if (days > 0) {
+    start.setDate(start.getDate() - days + 1);
+    document.getElementById('comp-start').value = start.toISOString().slice(0,10);
+    document.getElementById('comp-end').value = end.toISOString().slice(0,10);
+  } else {
+    document.getElementById('comp-start').value = '';
+    document.getElementById('comp-end').value = '';
+  }
+  loadCompanyStats();
+}
+
+async function loadCompanyStats() {
+  const start = document.getElementById('comp-start').value;
+  const end = document.getElementById('comp-end').value;
+  const qs = new URLSearchParams();
+  if (start) qs.set('start', start);
+  if (end) qs.set('end', end);
+  const info = document.getElementById('comp-range-info');
+  info.textContent = (start || end) ? `${start||'처음'} ~ ${end||'현재'} 작성글 기준` : '전체 기간';
+
+  const r = await fetch('/api/companies?' + qs.toString());
+  const rows = await r.json();
+  const body = document.getElementById('company-box-body');
+  if (!rows.length) {
+    body.innerHTML = '<div class="empty-msg">해당 기간에 업체 작성글이 없습니다</div>';
+    return;
+  }
+  // 합계
+  const sum = rows.reduce((a,r)=>({t:a.t+r.total,d:a.d+r.deleted_count,c:a.c+r.title_changed_count,k:a.k+r.keyword_hit_count}),{t:0,d:0,c:0,k:0});
+  body.innerHTML = `
+    <div style="font-size:12px;color:#93c5fd;margin-bottom:8px">
+      업체 ${rows.length}곳 · 총 ${sum.t}글 · 삭제 ${sum.d} · 제목변경 ${sum.c} · 키워드 ${sum.k}
+    </div>
+    <table class="data-table">
+      <thead><tr>
+        <th>업체명</th><th>총 글</th><th>활성</th><th>삭제</th><th>제목변경</th><th>키워드히트</th><th>마지막 작성</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td><span class="company-badge" style="cursor:pointer" title="클릭하면 이 업체 게시글 보기" onclick='openCompanyArticles(${JSON.stringify(r.company_name)})'>🔎 ${esc(r.company_name)}</span></td>
+        <td style="text-align:right;font-weight:bold">${r.total}</td>
+        <td style="text-align:right">${r.active_count}</td>
+        <td style="text-align:right;color:${r.deleted_count>0?'#fca5a5':'#888'}">${r.deleted_count}</td>
+        <td style="text-align:right;color:${r.title_changed_count>0?'#fcd34d':'#888'}">${r.title_changed_count}</td>
+        <td style="text-align:right;color:${r.keyword_hit_count>0?'#93c5fd':'#888'}">${r.keyword_hit_count}</td>
+        <td style="color:#888">${r.last_write_str||'-'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+async function openCompanyArticles(name) {
+  // 현재 업체현황에 설정된 날짜 범위를 그대로 적용
+  const start = document.getElementById('comp-start').value;
+  const end = document.getElementById('comp-end').value;
+  const qs = new URLSearchParams({name});
+  if (start) qs.set('start', start);
+  if (end) qs.set('end', end);
+  const body = document.getElementById('company-box-body');
+  body.innerHTML = '<div class="empty-msg">불러오는 중...</div>';
+  const d = await fetch('/api/companies/articles?' + qs.toString()).then(r=>r.json());
+  const rows = d.rows || [];
+  body.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <button class="btn-secondary" onclick="loadCompanyStats()">← 업체 목록</button>
+      <span style="font-size:13px;color:#4ade80;font-weight:bold">🏢 ${esc(name)}</span>
+      <span style="font-size:12px;color:#888">게시글 ${rows.length}건${(start||end)?` (${start||'처음'}~${end||'현재'})`:''}</span>
+    </div>
+    ${rows.length===0 ? '<div class="empty-msg">해당 기간에 게시글이 없습니다</div>' : `
+    <table class="data-table">
+      <thead><tr><th>상태</th><th>작성일</th><th>게시판</th><th>제목</th><th>닉네임</th><th>링크</th></tr></thead>
+      <tbody>${rows.map(a=>{
+        const st = statusBadge(a);
+        const chg = (a.title_changed && a.title!==a.current_title)
+          ? `<div style="font-size:11px;color:#fcd34d">↳ "${esc(a.title)}" → "${esc(a.current_title)}"</div>` : '';
+        return `<tr>
+          <td>${st}</td>
+          <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
+          <td style="color:#6ee7b7">${esc(a.menu_name||'')}</td>
+          <td>${esc(a.current_title||a.title||'')}${chg}</td>
+          <td style="color:#93c5fd">${esc(a.writer_nickname||'')}${a.member_tag?`<br><span class="tag-badge">#${esc(a.member_tag)}</span>`:''}</td>
+          <td><a href="${a.url}" target="_blank" style="color:#4ade80">↗</a></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`}`;
+}
+
+function closeCompanyModal() {
+  document.getElementById('company-modal').classList.remove('open');
+}
+
+// ── 글관리 (작성자별 게시글 추적) ─────────────────────────────────────────────
+let wrSelected = null;
+
+async function openWriterModal() {
+  // 카페 드롭다운 채우기
+  const s = await fetch('/api/stats').then(r=>r.json());
+  const sel = document.getElementById('wr-cafe');
+  sel.innerHTML = '<option value="0">전체 카페</option>' +
+    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
+  document.getElementById('writer-modal').classList.add('open');
+  document.getElementById('wr-search-result').innerHTML = '';
+  loadWriterList();
+}
+function closeWriterModal() {
+  document.getElementById('writer-modal').classList.remove('open');
+}
+
+async function searchWriter() {
+  const keyword = document.getElementById('wr-keyword').value.trim();
+  const id_type = parseInt(document.getElementById('wr-idtype').value);
+  const cafe_id = parseInt(document.getElementById('wr-cafe').value);
+  const info = document.getElementById('wr-search-info');
+  if (!keyword) { showToast('검색어를 입력하세요'); return; }
+  info.textContent = '검색 중...';
+  const r = await fetch('/api/writers/search', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({keyword, id_type, cafe_id}),
+  });
+  const d = await r.json();
+  const el = document.getElementById('wr-search-result');
+  if (d.error) { info.textContent = ''; el.innerHTML = `<div style="color:#fca5a5;font-size:12px;padding:8px 0">${esc(d.error)}</div>`; return; }
+  info.textContent = `${d.results.length}명 검색됨`;
+  if (!d.results.length) { el.innerHTML = '<div style="color:#555;font-size:12px;padding:8px 0">검색 결과 없음 (아이디는 전체 아이디로 검색)</div>'; return; }
+  el.innerHTML = `<div style="padding:8px 0;display:flex;flex-direction:column;gap:4px">${d.results.map(m=>`
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#0d1b2e;border-radius:4px;font-size:12px">
+      <span style="color:#4a6fa5">[${esc(m.cafe_name)}]</span>
+      <b style="color:#e0e0e0">${esc(m.nickname)}</b>
+      <span style="color:#888">${esc(m.masked_id)}</span>
+      <span class="tag-badge">#${esc(m.member_tag)}</span>
+      <span class="level-badge">${esc(m.level_name)}</span>
+      <div style="flex:1"></div>
+      <button class="btn-success" style="padding:2px 10px" onclick='registerWriter(${JSON.stringify(m)})'>+ 등록</button>
+    </div>`).join('')}</div>`;
+}
+
+async function registerWriter(m) {
+  await fetch('/api/writers', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(m)});
+  showToast(`등록: ${m.nickname}`);
+  loadWriterList();
+}
+
+async function loadWriterList() {
+  const rows = await fetch('/api/writers').then(r=>r.json());
+  const el = document.getElementById('wr-list');
+  if (!rows.length) { el.innerHTML = '<div style="color:#555;font-size:12px;padding:12px">등록된 작성자 없음<br>위에서 검색해 등록하세요</div>'; return; }
+  el.innerHTML = rows.map(w=>`
+    <div class="wr-item ${wrSelected&&wrSelected.cafe_id===w.cafe_id&&wrSelected.member_key===w.member_key?'selected':''}"
+         onclick='selectWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>
+      <div style="display:flex;align-items:center;gap:6px">
+        <b style="color:#e0e0e0;font-size:13px">${esc(w.nickname||w.masked_id)}</b>
+        <span style="color:#4a6fa5;font-size:11px">[${esc(w.cafe_name)}]</span>
+        <div style="flex:1"></div>
+        <span onclick='event.stopPropagation();delWriter(${w.cafe_id},"${esc(w.member_key)}")' style="color:#fca5a5;cursor:pointer;font-size:14px">✕</span>
+      </div>
+      <div style="font-size:11px;color:#888;margin-top:2px">
+        ${esc(w.masked_id||'')} <span class="tag-badge">#${esc(w.member_tag||'')}</span>
+      </div>
+      <div style="font-size:11px;margin-top:3px">
+        글 ${w.article_count} · <span style="color:#fcd34d">변경 ${w.changed_count}</span> · <span style="color:#fca5a5">삭제 ${w.deleted_count}</span>
+      </div>
+    </div>`).join('');
+}
+
+async function delWriter(cafe_id, member_key) {
+  await fetch(`/api/writers/${cafe_id}/${encodeURIComponent(member_key)}`, {method:'DELETE'});
+  if (wrSelected && wrSelected.cafe_id===cafe_id && wrSelected.member_key===member_key) {
+    wrSelected = null;
+    document.getElementById('wr-articles').innerHTML = '<div class="empty-msg">왼쪽에서 작성자를 선택하세요</div>';
+  }
+  loadWriterList();
+}
+
+let wrBackfillPoll = null;
+
+async function selectWriter(w) {
+  wrSelected = w;
+  loadWriterList();
+  if (wrBackfillPoll) { clearTimeout(wrBackfillPoll); wrBackfillPoll = null; }
+  await renderWriterArticles(w);
+}
+
+async function renderWriterArticles(w) {
+  const el = document.getElementById('wr-articles');
+  const d = await fetch(`/api/writers/${w.cafe_id}/${encodeURIComponent(w.member_key)}/articles?limit=2000`).then(r=>r.json());
+  const rows = d.rows || [];
+  const head = `
+    <div style="padding:8px 12px;font-size:12px;color:#93c5fd;border-bottom:1px solid #0f3460;display:flex;align-items:center;gap:10px">
+      <span><b>${esc(w.nickname||'')}</b> 의 게시글 ${rows.length}건</span>
+      <div style="flex:1"></div>
+      <span id="wr-backfill-status" style="color:#888;font-size:11px"></span>
+      <button class="btn-secondary" style="padding:3px 10px;font-size:11px" onclick='backfillWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>📥 과거글 가져오기</button>
+    </div>`;
+  if (!rows.length) {
+    el.innerHTML = head + '<div class="empty-msg">표시할 게시글이 없습니다<br><small style="color:#555">[과거글 가져오기]로 이 작성자의 과거 전체글을 불러올 수 있습니다</small></div>';
+    return;
+  }
+  el.innerHTML = head + `
+    <table class="data-table">
+      <thead><tr>
+        <th>상태</th><th>작성일</th><th>게시판</th><th>제목</th><th>조회</th><th>댓글</th><th>♥</th><th>링크</th>
+      </tr></thead>
+      <tbody>${rows.map(a=>{
+        const st = statusBadge(a);
+        const titleChg = (a.title_changed && a.title!==a.current_title)
+          ? `<div style="font-size:11px;color:#fcd34d">↳ "${esc(a.title)}" → "${esc(a.current_title)}"</div>` : '';
+        return `<tr>
+          <td>${st}</td>
+          <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
+          <td style="color:#6ee7b7">${esc(a.menu_name||'')}</td>
+          <td>${esc(a.current_title||a.title||'')}${titleChg}</td>
+          <td style="text-align:right">${fmtNum(a.cur_read)}</td>
+          <td style="text-align:right">${fmtNum(a.cur_comment)}</td>
+          <td style="text-align:right">${fmtNum(a.cur_like)}</td>
+          <td><a href="${a.url}" target="_blank" style="color:#4ade80">↗</a></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+}
+
+async function backfillWriter(w) {
+  const setStatus = t => { const s=document.getElementById('wr-backfill-status'); if(s) s.textContent=t; };
+  setStatus('과거글 수집 시작…');
+  await fetch(`/api/writers/${w.cafe_id}/${encodeURIComponent(w.member_key)}/backfill`, {method:'POST'});
+  if (wrBackfillPoll) clearTimeout(wrBackfillPoll);
+  const poll = async () => {
+    if (!wrSelected || wrSelected.member_key !== w.member_key) return;   // 다른 작성자로 이동
+    const s = await fetch(`/api/writers/${w.cafe_id}/${encodeURIComponent(w.member_key)}/backfill/status`).then(r=>r.json());
+    const j = s.job || {};
+    if (j.status === 'running') {
+      setStatus(`수집 중… ${j.done||0}건` + (j.total?` / 전체 ${j.total}`:''));
+      await renderWriterArticles(w);
+      wrBackfillPoll = setTimeout(poll, 1500);
+    } else if (j.status === 'error') {
+      await renderWriterArticles(w);
+      setStatus('오류: ' + (j.error||''));
+    } else {
+      await renderWriterArticles(w);
+      setStatus(`완료 · 총 ${j.total||j.done||0}건`);
+      loadWriterList();
+    }
+  };
+  wrBackfillPoll = setTimeout(poll, 800);
+}
+
+async function openMappingEdit() {
+  const r = await fetch('/api/companies/mapping');
+  const rows = await r.json();
+  const body = document.getElementById('company-box-body');
+  body.innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="font-size:12px;color:#93c5fd;margin-bottom:8px">업체-ID 매핑 (네이버ID → 업체명)</div>
+      <div class="form-row" style="margin-bottom:8px">
+        <input class="form-input" id="map-id" type="text" placeholder="네이버 ID">
+        <input class="form-input" id="map-company" type="text" placeholder="업체명">
+        <button class="btn-success" onclick="addMapping()">+ 추가</button>
+      </div>
+    </div>
+    <table class="data-table">
+      <thead><tr><th>네이버 ID</th><th>업체명</th><th>동기화</th></tr></thead>
+      <tbody>${rows.map(r => `<tr>
+        <td>${esc(r.naver_id)}</td>
+        <td><span class="company-badge">${esc(r.company_name)}</span></td>
+        <td style="color:#555;font-size:11px">${r.synced_at ? new Date(r.synced_at).toLocaleString('ko') : '-'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
+}
+
+async function addMapping() {
+  const naver_id = document.getElementById('map-id').value.trim();
+  const company_name = document.getElementById('map-company').value.trim();
+  if (!naver_id || !company_name) return;
+  await fetch('/api/companies/mapping', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({naver_id, company_name})});
+  showToast('매핑 추가 완료');
+  openMappingEdit();
+}
+
+// ── 설정 ──────────────────────────────────────────────────────────────────────
+async function openSettings() {
+  const r = await fetch('/api/settings');
+  const cfg = await r.json();
+  document.getElementById('s-account-id').value = cfg.account_id || '';
+  document.getElementById('s-tick').value = cfg.tick_s || 1.5;
+  document.getElementById('s-sheet-id').value = (cfg.sheet && cfg.sheet.spreadsheet_id) || '';
+  document.getElementById('s-sheet-gid').value = (cfg.sheet && cfg.sheet.gid) || '0';
+  renderCafeList(cfg.cafes || []);
+  document.getElementById('settings-modal').classList.add('open');
+  checkSessionStatus();
+  loadKeywords();
+  refreshSheetStatus();
+}
+
+async function saveSheetConfig() {
+  const spreadsheet_id = document.getElementById('s-sheet-id').value.trim();
+  const gid = document.getElementById('s-sheet-gid').value.trim() || '0';
+  await fetch('/api/sheet/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({spreadsheet_id, gid})});
+  showToast('시트 설정 저장됨');
+  refreshSheetStatus();
+}
+
+async function syncSheetNow() {
+  showToast('시트 동기화 중...');
+  const r = await fetch('/api/sheet/sync', {method:'POST'});
+  const d = await r.json();
+  if (d.error) { showToast(`오류: ${d.error}`); return; }
+  showToast(`동기화 완료: 유효 ${d.total}행, 신규 ${d.new}개`);
+  refreshSheetStatus();
+}
+
+async function refreshSheetStatus() {
+  const d = await fetch('/api/sheet/status').then(r=>r.json());
+  const el = document.getElementById('sheet-status');
+  if (!d.configured) { el.textContent = 'B열=네이버ID, C열=업체명 · 링크공유(뷰어)로 열어두세요'; return; }
+  el.innerHTML = `업체ID ${d.master}개 · <span style="color:#4ade80">조회완료 ${d.resolved}</span> · <span style="color:#fcd34d">대기 ${d.pending}</span> · <span style="color:#888">미가입 ${d.not_member}</span>`;
+}
+
+function renderCafeList(cafes) {
+  const el = document.getElementById('cafe-list');
+  if (!cafes.length) { el.innerHTML = '<div style="color:#555;font-size:12px;padding:4px 0">등록된 카페 없음</div>'; return; }
+  el.innerHTML = cafes.map(c => `
+    <div style="display:flex;align-items:center;gap:8px;padding:6px 8px;background:#0d1b2e;border-radius:4px;margin-bottom:4px;font-size:12px">
+      <span class="badge badge-blue" style="font-size:11px">${esc(c.name||c.cafe_url)}</span>
+      <span style="color:#666">${esc(c.cafe_url)}</span>
+      <span style="color:#555">ID:${c.cafe_id}</span>
+      <span style="color:#555">메뉴:${c.menu_id??0}</span>
+      <div style="flex:1"></div>
+      <button style="background:none;border:1px solid #7f1d1d;color:#fca5a5;padding:1px 8px;border-radius:3px;cursor:pointer;font-size:11px" onclick="removeCafe(${c.cafe_id})">삭제</button>
+    </div>`).join('');
+}
+
+async function addCafe() {
+  const cafe_url = document.getElementById('s-cafe-url').value.trim();
+  const cafe_id = parseInt(document.getElementById('s-cafe-id').value) || 0;
+  const name = document.getElementById('s-cafe-name').value.trim() || cafe_url;
+  const menu_id = parseInt(document.getElementById('s-menu-id').value) || 0;
+  if (!cafe_url || !cafe_id) { showToast('카페 URL과 ID를 입력하세요'); return; }
+  const r = await fetch('/api/settings/add_cafe', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cafe_url, cafe_id, name, menu_id}),
+  });
+  const d = await r.json();
+  if (d.error) { showToast(`오류: ${d.error}`); return; }
+  document.getElementById('s-cafe-url').value = '';
+  document.getElementById('s-cafe-id').value = '';
+  document.getElementById('s-cafe-name').value = '';
+  document.getElementById('s-menu-id').value = '0';
+  renderCafeList(d.cafes);
+  showToast(`카페 추가: ${name}`);
+  updateStats();
+}
+
+async function removeCafe(cafe_id) {
+  await fetch(`/api/settings/cafe/${cafe_id}`, {method:'DELETE'});
+  const r = await fetch('/api/settings');
+  const cfg = await r.json();
+  renderCafeList(cfg.cafes || []);
+  showToast('카페 삭제됨');
+  updateStats();
+}
+
+function closeSettings() {
+  document.getElementById('settings-modal').classList.remove('open');
+}
+
+async function resolveCafe() {
+  const url = document.getElementById('s-cafe-url').value.trim();
+  if (!url) return;
+  const r = await fetch('/api/settings/resolve_cafe', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({cafe_url: url}),
+  });
+  const d = await r.json();
+  if (d.club_id) {
+    document.getElementById('s-cafe-id').value = d.club_id;
+    showToast(`카페 ID: ${d.club_id}`);
+  } else {
+    showToast(`오류: ${d.error}`);
+  }
+}
+
+async function saveSettings() {
+  const cfg = {
+    account_id: document.getElementById('s-account-id').value.trim(),
+    tick_s: parseFloat(document.getElementById('s-tick').value) || 1.5,
+  };
+  await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(cfg)});
+  showToast('설정 저장됨');
+  closeSettings();
+  updateStats();
+}
+
+async function checkSessionStatus(live = false) {
+  const el = document.getElementById('session-status-text');
+  el.textContent = '확인 중...'; el.style.color = '#888';
+  const r = await fetch('/api/session/status' + (live ? '?live=true' : ''));
+  const d = await r.json();
+  el.innerHTML = d.ok
+    ? `<span style="color:#4ade80">✓ ${esc(d.account_id)} — ${esc(d.reason)}</span>`
+    : `<span style="color:#fca5a5">✗ ${esc(d.reason)}</span>`;
+  // 캡처 진행 중이면 완료 버튼 표시
+  toggleCaptureButtons(d.pending);
+  return d;
+}
+
+function toggleCaptureButtons(pending) {
+  document.getElementById('btn-cap-start').style.display = pending ? 'none' : '';
+  document.getElementById('btn-cap-finish').style.display = pending ? '' : 'none';
+  document.getElementById('capture-guide').style.display = pending ? '' : 'none';
+}
+
+async function captureStart() {
+  const account_id = document.getElementById('s-account-id').value.trim();
+  if (!account_id) { showToast('계정 ID를 먼저 입력하세요'); return; }
+  showToast('브라우저를 여는 중...');
+  const r = await fetch('/api/session/capture/start', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({account_id}),
+  });
+  const d = await r.json();
+  if (d.error) { showToast(`오류: ${d.error}`); return; }
+  toggleCaptureButtons(true);
+  showToast(d.message);
+}
+
+async function captureFinish() {
+  showToast('로그인 정보를 저장하는 중...');
+  const r = await fetch('/api/session/capture/finish', {method:'POST'});
+  const d = await r.json();
+  toggleCaptureButtons(false);
+  showToast(d.message);
+  checkSessionStatus(true);
+  updateStats();
+}
+
+async function captureCancel() {
+  await fetch('/api/session/capture/cancel', {method:'POST'});
+  toggleCaptureButtons(false);
+}
+
+// ── 키워드 ────────────────────────────────────────────────────────────────────
+async function loadKeywords() {
+  const r = await fetch('/api/keywords');
+  const rows = await r.json();
+  const el = document.getElementById('keyword-list');
+  if (rows.length === 0) {
+    el.innerHTML = '<div style="color:#555;font-size:12px;padding:8px">등록된 키워드 없음</div>';
+    return;
+  }
+  el.innerHTML = rows.map(k => `
+    <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #1a2a4a">
+      <span style="flex:1;color:${k.is_active?'#e0e0e0':'#555'}">${esc(k.keyword)}</span>
+      <span style="font-size:11px;color:#888">${k.total_hits}회</span>
+      <button style="background:none;border:1px solid #1a4a7a;color:#93c5fd;padding:2px 8px;border-radius:3px;cursor:pointer;font-size:11px"
+        onclick="toggleKw(${k.id}, ${k.is_active})">${k.is_active?'끄기':'켜기'}</button>
+      <button style="background:none;border:1px solid #7f1d1d;color:#fca5a5;padding:2px 6px;border-radius:3px;cursor:pointer;font-size:11px"
+        onclick="deleteKw(${k.id})">삭제</button>
+    </div>`).join('');
+}
+
+async function addKeyword() {
+  const kw = document.getElementById('new-keyword').value.trim();
+  if (!kw) return;
+  await fetch('/api/keywords', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keyword:kw})});
+  document.getElementById('new-keyword').value = '';
+  loadKeywords();
+  showToast(`키워드 추가: ${kw}`);
+}
+
+async function deleteKw(id) {
+  await fetch(`/api/keywords/${id}`, {method:'DELETE'});
+  loadKeywords();
+}
+
+async function toggleKw(id, current) {
+  await fetch(`/api/keywords/${id}`, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({is_active: !current})});
+  loadKeywords();
+}
+
+// ── Watcher 제어 ──────────────────────────────────────────────────────────────
+async function toggleWatcher() {
+  const r = await fetch('/api/stats');
+  const s = await r.json();
+  if (s.running) {
+    await fetch('/api/watcher/stop', {method:'POST'});
+    showToast('감시 중지됨');
+  } else {
+    const res = await fetch('/api/watcher/start', {method:'POST'});
+    const d = await res.json();
+    if (!d.ok) { showToast(`오류: ${d.error || d.message}`); return; }
+    showToast('감시 시작됨');
+  }
+}
+
+// ── 유틸 ──────────────────────────────────────────────────────────────────────
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtNum(n) {
+  if (!n) return '0';
+  return Number(n).toLocaleString('ko');
+}
+
+// 게시글 상태 뱃지 (4단계: 정상/제목변경/삭제/변경후삭제)
+function statusBadge(a) {
+  if (a.status === 'deleted' && a.title_changed)
+    return '<span class="wr-status wr-status-deleted">변경후삭제</span>';
+  if (a.status === 'deleted')
+    return '<span class="wr-status wr-status-deleted">삭제</span>';
+  if (a.title_changed)
+    return '<span class="wr-status wr-status-changed">제목변경</span>';
+  return '<span class="wr-status wr-status-normal">정상</span>';
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.style.display = 'none'; }, 3000);
+}
+
+// 좌/우 스크롤 무한로딩
+document.getElementById('article-list').addEventListener('scroll', function() {
+  if (this.scrollTop + this.clientHeight >= this.scrollHeight - 100) loadArticles(false);
+});
+document.getElementById('right-content').addEventListener('scroll', function() {
+  if (this.scrollTop + this.clientHeight >= this.scrollHeight - 100) loadFlagged(false);
+});
+
+// ── 초기화 ────────────────────────────────────────────────────────────────────
+async function init() {
+  connectWS();
+  await updateStats();
+  await loadCafeFilter();
+  await loadArticles();
+  await loadFlagged();
+  setInterval(updateStats, 15000);
+  setInterval(() => { loadArticles(); loadFlagged(); }, 30000);
+}
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,27 @@
+# 민감 정보
+config/sso_secret.txt
+# account_id, sheet_id 등 실제 설정 (예시는 settings.example.json)
+config/settings.json
+
+# 로그인 세션 쿠키 (암호화됐지만 민감)
+data/sessions/
+
+# 크롤링 데이터 / 런타임 산출물
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/*.log
+data/*.out
+data/cf.log
+data/cloudflared.log
+
+# 임시/일회성 스크립트
+drain_revisits.py
+bulk_resolve.py
+backfill_tags.py
+test_*.py
+
+# 파이썬
+__pycache__/
+*.pyc
+*.pyo

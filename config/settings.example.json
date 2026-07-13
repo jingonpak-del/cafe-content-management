@@ -1,0 +1,16 @@
+{
+  "cafes": [
+    {
+      "cafe_url": "example_cafe",
+      "cafe_id": 12345678,
+      "menu_id": 0,
+      "name": "카페표시명"
+    }
+  ],
+  "account_id": "네이버로그인아이디",
+  "tick_s": 1.5,
+  "sheet": {
+    "spreadsheet_id": "구글시트_스프레드시트_ID",
+    "gid": "시트탭_gid"
+  }
+}
