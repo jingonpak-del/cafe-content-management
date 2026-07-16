@@ -143,6 +143,14 @@ CREATE TABLE IF NOT EXISTS member_cache (
     PRIMARY KEY (cafe_id, member_key)
 );
 
+-- 글관리: 작성자 그룹 (등록 작성자를 그룹으로 묶어 관리)
+CREATE TABLE IF NOT EXISTS writer_group (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    sort_order  INTEGER DEFAULT 0,
+    created_at  INTEGER
+);
+
 -- 글관리: 게시글을 추적할 등록 작성자 (카페별 member_key 단위)
 CREATE TABLE IF NOT EXISTS watched_writer (
     cafe_id      INTEGER NOT NULL,
@@ -216,6 +224,10 @@ class Database:
                           ("deleted_at", "INTEGER"), ("flag_ts", "INTEGER")):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {decl}")
+        # 작성자 그룹: 기존 watched_writer 에 group_id 추가
+        ww_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(watched_writer)")}
+        if "group_id" not in ww_cols:
+            self.conn.execute("ALTER TABLE watched_writer ADD COLUMN group_id INTEGER")
         if new_flag_ts:
             # 기존 이상감지 게시글의 flag_ts를 이력에서 백필
             # (제목변경 최근시각 / 키워드 최근발견 / write_ts 중 최대)
@@ -669,19 +681,52 @@ class Database:
 
     # ── 글관리: 등록 작성자 ────────────────────────────────────────────────
 
+    # ── 작성자 그룹 ────────────────────────────────────────────────────────
+    def list_writer_groups(self) -> list:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT id, name, sort_order FROM writer_group ORDER BY sort_order, id"
+        ).fetchall()]
+
+    def add_writer_group(self, name: str) -> int:
+        r = self.conn.execute("SELECT COALESCE(MAX(sort_order),0)+1 FROM writer_group").fetchone()
+        cur = self.conn.execute(
+            "INSERT INTO writer_group (name, sort_order, created_at) VALUES (?,?,?)",
+            (name.strip(), r[0], now_ms()),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def rename_writer_group(self, group_id: int, name: str):
+        self.conn.execute("UPDATE writer_group SET name=? WHERE id=?", (name.strip(), group_id))
+        self.conn.commit()
+
+    def delete_writer_group(self, group_id: int):
+        """그룹 삭제. 소속 작성자는 미분류(group_id=NULL)로 이동(등록 자체는 유지)."""
+        self.conn.execute("UPDATE watched_writer SET group_id=NULL WHERE group_id=?", (group_id,))
+        self.conn.execute("DELETE FROM writer_group WHERE id=?", (group_id,))
+        self.conn.commit()
+
+    def set_writer_group(self, cafe_id: int, member_key: str, group_id: int | None):
+        self.conn.execute(
+            "UPDATE watched_writer SET group_id=? WHERE cafe_id=? AND member_key=?",
+            (group_id, cafe_id, member_key),
+        )
+        self.conn.commit()
+
     def add_watched_writer(self, cafe_id: int, member_key: str, naver_id: str,
                            nickname: str, masked_id: str, member_tag: str,
-                           level_name: str, memo: str = ""):
+                           level_name: str, memo: str = "", group_id: int | None = None):
         self.conn.execute(
             """INSERT INTO watched_writer
                (cafe_id, member_key, naver_id, nickname, masked_id, member_tag,
-                level_name, memo, registered_at)
-               VALUES (?,?,?,?,?,?,?,?,?)
+                level_name, memo, registered_at, group_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(cafe_id, member_key) DO UPDATE SET
                  nickname=excluded.nickname, masked_id=excluded.masked_id,
-                 member_tag=excluded.member_tag, level_name=excluded.level_name""",
+                 member_tag=excluded.member_tag, level_name=excluded.level_name,
+                 group_id=COALESCE(excluded.group_id, watched_writer.group_id)""",
             (cafe_id, member_key, naver_id, nickname, masked_id, member_tag,
-             level_name, memo, now_ms()),
+             level_name, memo, now_ms(), group_id),
         )
         self.conn.commit()
 

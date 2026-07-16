@@ -104,6 +104,19 @@ def _cafe_names() -> dict[int, str]:
     return {c["cafe_id"]: c.get("name") or c.get("cafe_url", "") for c in cfg.get("cafes", [])}
 
 
+def _cafe_urls() -> dict[int, str]:
+    cfg = _load_config()
+    return {c["cafe_id"]: c.get("cafe_url", "") for c in cfg.get("cafes", [])}
+
+
+def _member_page_url(cafe_url: str, cafe_id: int, member_key: str) -> str:
+    """작성자 카페 회원 페이지 (작성글 목록). 브라우저가 로그인 쿠키로 렌더링."""
+    if not (cafe_url and member_key):
+        return ""
+    return (f"https://cafe.naver.com/{cafe_url}.cafe"
+            f"?iframe_url=/ca-fe/cafes/{cafe_id}/members/{member_key}")
+
+
 # ── WebSocket Hub ─────────────────────────────────────────────────────────────
 
 class Hub:
@@ -184,6 +197,7 @@ def articles(
     db = _db()
     try:
         names = _cafe_names()
+        urls = _cafe_urls()
         rows = db.get_articles(
             limit=limit, offset=offset, search=search, status_filter=status,
             cafe_id=cafe_id or None,
@@ -195,6 +209,7 @@ def articles(
             r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
             r["url"] = (f"https://cafe.naver.com/ca-fe/cafes/{r['cafe_id']}"
                         f"/articles/{r['article_id']}")
+            r["member_url"] = _member_page_url(urls.get(r["cafe_id"], ""), r["cafe_id"], r.get("member_key", ""))
         return {"rows": rows, "has_more": len(rows) == limit}
     finally:
         db.close()
@@ -209,6 +224,7 @@ def flagged(
     db = _db()
     try:
         names = _cafe_names()
+        urls = _cafe_urls()
         rows = db.get_flagged(flag_type=type, limit=limit, offset=offset)
         for r in rows:
             r["write_str"] = _fmt(r.get("write_ts"))
@@ -216,6 +232,7 @@ def flagged(
             r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
             r["url"] = (f"https://cafe.naver.com/ca-fe/cafes/{r['cafe_id']}"
                         f"/articles/{r['article_id']}")
+            r["member_url"] = _member_page_url(urls.get(r["cafe_id"], ""), r["cafe_id"], r.get("member_key", ""))
         return {"rows": rows, "has_more": len(rows) == limit}
     finally:
         db.close()
@@ -247,6 +264,7 @@ def article_detail(cafe_id: int, article_id: int):
         d["write_str"] = _fmt(d.get("write_ts"))
         d["deleted_str"] = _fmt(d.get("deleted_at"))
         d["url"] = f"https://cafe.naver.com/ca-fe/cafes/{cafe_id}/articles/{article_id}"
+        d["member_url"] = _member_page_url(_cafe_urls().get(cafe_id, ""), cafe_id, d.get("member_key", ""))
         for h in d.get("title_history", []):
             h["changed_str"] = _fmt(h.get("changed_at"))
         # 상태 이력 타임라인 구성 (작성 → 제목변경들 → 삭제)
@@ -361,6 +379,7 @@ def company_articles(name: str, start: str = "", end: str = ""):
             r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
             r["url"] = (f"https://cafe.naver.com/ca-fe/cafes/{r['cafe_id']}"
                         f"/articles/{r['article_id']}")
+            r["member_url"] = _member_page_url(_cafe_urls().get(r["cafe_id"], ""), r["cafe_id"], r.get("member_key", ""))
         return {"rows": rows}
     finally:
         db.close()
@@ -433,11 +452,71 @@ async def writers_search(req: dict):
 async def writers_add(req: dict):
     db = _db()
     try:
+        gid = req.get("group_id")
         db.add_watched_writer(
             int(req["cafe_id"]), req["member_key"], req.get("naver_id", ""),
             req.get("nickname", ""), req.get("masked_id", ""), req.get("member_tag", ""),
             req.get("level_name", ""), req.get("memo", ""),
+            group_id=int(gid) if gid not in (None, "", 0, "0") else None,
         )
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+# ── 글관리: 작성자 그룹 ────────────────────────────────────────────────────────
+
+@app.get("/api/writer-groups")
+def writer_groups_list():
+    db = _db()
+    try:
+        return {"groups": db.list_writer_groups()}
+    finally:
+        db.close()
+
+
+@app.post("/api/writer-groups")
+async def writer_groups_add(req: dict):
+    name = (req.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "그룹 이름을 입력하세요"}, status_code=400)
+    db = _db()
+    try:
+        return {"ok": True, "id": db.add_writer_group(name)}
+    finally:
+        db.close()
+
+
+@app.patch("/api/writer-groups/{group_id}")
+async def writer_groups_rename(group_id: int, req: dict):
+    name = (req.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "그룹 이름을 입력하세요"}, status_code=400)
+    db = _db()
+    try:
+        db.rename_writer_group(group_id, name)
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.delete("/api/writer-groups/{group_id}")
+def writer_groups_delete(group_id: int):
+    db = _db()
+    try:
+        db.delete_writer_group(group_id)
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/writers/{cafe_id}/{member_key}/group")
+async def writer_set_group(cafe_id: int, member_key: str, req: dict):
+    gid = req.get("group_id")
+    db = _db()
+    try:
+        db.set_writer_group(cafe_id, member_key,
+                            int(gid) if gid not in (None, "", 0, "0") else None)
         return {"ok": True}
     finally:
         db.close()
@@ -633,7 +712,7 @@ async def save_settings(req: dict):
             cfg[key] = req[key]
     _save_config(cfg)
     STATE["cafe_names"] = [
-        {"cafe_id": c["cafe_id"], "name": c.get("name") or c.get("cafe_url", "")}
+        {"cafe_id": c["cafe_id"], "name": c.get("name") or c.get("cafe_url", ""), "cafe_url": c.get("cafe_url", "")}
         for c in cfg.get("cafes", [])
     ]
     STATE["account_id"] = cfg.get("account_id", "")
@@ -819,12 +898,15 @@ async def startup():
     hub.loop = asyncio.get_running_loop()
     cfg = _load_config()
     STATE["cafe_names"] = [
-        {"cafe_id": c["cafe_id"], "name": c.get("name") or c.get("cafe_url", "")}
+        {"cafe_id": c["cafe_id"], "name": c.get("name") or c.get("cafe_url", ""), "cafe_url": c.get("cafe_url", "")}
         for c in cfg.get("cafes", [])
     ]
     STATE["account_id"] = cfg.get("account_id", "")
-    # 카페가 설정돼 있으면 서버 시작 시 감시 자동 재개
-    if cfg.get("cafes") and not STATE["running"]:
+    # 카페가 설정돼 있으면 서버 시작 시 감시 자동 재개.
+    # 단 GAMSI_NO_WATCH=1 이면 워처를 띄우지 않는다(프로덕션과 gamsi.db·세션을 공유하는
+    # 프리뷰/두번째 인스턴스가 중복 수집하지 않도록).
+    import os as _os
+    if cfg.get("cafes") and not STATE["running"] and _os.environ.get("GAMSI_NO_WATCH") != "1":
         threading.Thread(target=_run_watcher, daemon=True).start()
 
 

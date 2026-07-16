@@ -109,6 +109,19 @@
   .wr-status-normal { background: #1a472a; color: #4ade80; }
   .wr-status-changed { background: #4a3200; color: #fcd34d; }
   .wr-status-deleted { background: #7f1d1d; color: #fca5a5; }
+  /* 작성자 그룹 */
+  .wr-group { border-bottom: 1px solid #0f3460; }
+  .wr-group.active { background: #0d1b2e; }
+  .wr-group-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; cursor: pointer; user-select: none; font-size: 12px; color: #cbd5e1; }
+  .wr-group-head:hover { background: #1a2a4a; }
+  .wr-group-head b { color: #e0e0e0; }
+  .wr-caret { width: 12px; color: #6b7fa5; font-size: 11px; }
+  .wr-gcount { background: #0f3460; color: #93c5fd; border-radius: 10px; font-size: 10px; padding: 0 7px; }
+  .wr-gbtn { font-size: 11px; color: #6b7fa5; cursor: pointer; padding: 1px 5px; border-radius: 4px; }
+  .wr-gbtn:hover { background: #0f3460; color: #cbd5e1; }
+  .wr-gbtn.on { background: #1e3a5f; color: #4ade80; }
+  .wr-gbtn.del:hover { color: #fca5a5; }
+  .wr-empty { padding: 8px 14px; color: #556; font-size: 11px; }
 
   /* 설정 창 */
   #settings-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
@@ -262,7 +275,12 @@
     <!-- 본문: 좌 등록목록 / 우 게시글 -->
     <div id="writer-box-body">
       <div id="wr-list-panel">
-        <div class="section-title" style="margin:0">등록 작성자</div>
+        <div class="section-title" style="margin:0">작성자 그룹</div>
+        <div style="display:flex;align-items:center;gap:6px;padding:6px 8px">
+          <input id="wr-new-group" class="form-input" style="flex:1;padding:4px 8px;font-size:12px" placeholder="새 그룹 이름" onkeydown="if(event.key==='Enter')createGroup()">
+          <button class="btn-secondary" style="padding:4px 10px;font-size:12px;white-space:nowrap" onclick="createGroup()">+ 그룹등록</button>
+        </div>
+        <div id="wr-active-group" style="font-size:11px;color:#888;padding:0 8px 6px"></div>
         <div id="wr-list"></div>
       </div>
       <div id="wr-articles-panel">
@@ -531,10 +549,9 @@ function makeArticleRow(a) {
       <div class="${titleClass}">${cafeBadge} ${displayTitle}</div>
       <div class="article-meta">
         ${boardBadge}
-        <span>${esc(a.writer_nickname || '')}</span>
+        <span>${authorLink(a)}</span>
         ${level}
         ${company}
-        ${tag}
         <span style="color:#555">${a.write_str || ''}</span>
       </div>
       <div class="flag-icons">${flags.join('')}</div>
@@ -622,7 +639,7 @@ function makeFlaggedRow(a) {
         </div>
         ${extras}
         <div class="flagged-detail">
-          <span>${esc(a.writer_nickname)}${a.member_tag?` <span class="tag-badge">#${esc(a.member_tag)}</span>`:''}${naverId}</span>
+          <span>${authorLink(a)}${naverId}</span>
           ${company}
           <span title="이상 발견 시각" style="color:#e94560">🕒 ${a.flag_str || a.write_str || ''}</span>
           <a href="${a.url}" target="_blank" style="color:#4ade80;text-decoration:none" onclick="event.stopPropagation()">↗ 원문</a>
@@ -710,7 +727,8 @@ async function openDetail(cafe_id, article_id) {
     <div style="margin-bottom:12px">
       <div style="font-size:14px;font-weight:bold;color:#e0e0e0;margin-bottom:6px">${esc(a.current_title || a.title)}</div>
       ${a.title_changed ? `<div style="font-size:12px;color:#fcd34d;margin-bottom:4px">최초: ${esc(a.title)}</div>` : ''}
-      <div style="font-size:12px;color:#888">${esc(a.writer_nickname)}${a.member_tag?` <span class="tag-badge">#${esc(a.member_tag)}</span>`:''}${naverId} ${company}</div>
+      <div style="font-size:12px;color:#888">${authorLink(a)}${naverId} ${company}</div>
+      ${a.member_url?`<div style="font-size:12px;margin-top:4px"><a href="${a.member_url}" target="_blank" style="color:#6ee7b7">👤 이 작성자의 카페 게시글 전체 보기 ↗</a></div>`:''}
       ${a.menu_name ? `<div style="font-size:12px;margin-top:4px"><span class="board-badge">📋 ${esc(a.menu_name)}</span></div>` : ''}
       <div style="font-size:12px;color:#666;margin-top:4px">${a.write_str || ''}</div>
       <div style="margin-top:8px;display:flex;gap:12px;font-size:12px">
@@ -820,7 +838,7 @@ async function openCompanyArticles(name) {
           <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
           <td style="color:#6ee7b7">${esc(a.menu_name||'')}</td>
           <td>${esc(a.current_title||a.title||'')}${chg}</td>
-          <td style="color:#93c5fd">${esc(a.writer_nickname||'')}${a.member_tag?`<br><span class="tag-badge">#${esc(a.member_tag)}</span>`:''}</td>
+          <td style="color:#93c5fd">${authorLink(a)}</td>
           <td><a href="${a.url}" target="_blank" style="color:#4ade80">↗</a></td>
         </tr>`;
       }).join('')}</tbody>
@@ -833,6 +851,40 @@ function closeCompanyModal() {
 
 // ── 글관리 (작성자별 게시글 추적) ─────────────────────────────────────────────
 let wrSelected = null;
+let wrGroups = [];
+let activeGroupId = null;   // 신규 등록이 들어갈 대상 그룹 (null=미분류)
+let collapsedGroups = new Set(JSON.parse(localStorage.getItem('wr_collapsed')||'[]'));
+function saveCollapsed(){ localStorage.setItem('wr_collapsed', JSON.stringify([...collapsedGroups])); }
+function toggleGroup(gid){ const k=String(gid||0); collapsedGroups.has(k)?collapsedGroups.delete(k):collapsedGroups.add(k); saveCollapsed(); loadWriterList(); }
+function setActiveGroup(gid){ activeGroupId = gid||null; loadWriterList(); }
+
+async function createGroup(){
+  const inp = document.getElementById('wr-new-group');
+  const name = inp.value.trim();
+  if (!name) { showToast('그룹 이름을 입력하세요'); return; }
+  const r = await fetch('/api/writer-groups', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name})}).then(r=>r.json());
+  inp.value = '';
+  if (r.id) activeGroupId = r.id;   // 만든 그룹을 바로 등록 대상으로
+  loadWriterList();
+}
+async function renameGroup(gid, cur){
+  const name = prompt('그룹 이름 변경', cur);
+  if (name==null || !name.trim()) return;
+  await fetch('/api/writer-groups/'+gid, {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:name.trim()})});
+  loadWriterList();
+}
+async function deleteGroup(gid){
+  if (!confirm('그룹을 삭제할까요?\n(소속 작성자는 미분류로 이동하며, 등록 자체는 유지됩니다)')) return;
+  await fetch('/api/writer-groups/'+gid, {method:'DELETE'});
+  if (activeGroupId===gid) activeGroupId = null;
+  collapsedGroups.delete(String(gid));
+  loadWriterList();
+}
+async function moveWriterGroup(cafe_id, member_key, gid){
+  await fetch(`/api/writers/${cafe_id}/${encodeURIComponent(member_key)}/group`,
+    {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({group_id: gid||null})});
+  loadWriterList();
+}
 
 async function openWriterModal() {
   // 카페 드롭다운 채우기
@@ -877,17 +929,19 @@ async function searchWriter() {
 }
 
 async function registerWriter(m) {
-  await fetch('/api/writers', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(m)});
-  showToast(`등록: ${m.nickname}`);
+  await fetch('/api/writers', {method:'POST', headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({...m, group_id: activeGroupId||null})});
+  const gname = activeGroupId ? ((wrGroups.find(g=>g.id===activeGroupId)||{}).name||'') : '미분류';
+  showToast(`등록: ${m.nickname} → ${gname}`);
   loadWriterList();
 }
 
-async function loadWriterList() {
-  const rows = await fetch('/api/writers').then(r=>r.json());
-  const el = document.getElementById('wr-list');
-  if (!rows.length) { el.innerHTML = '<div style="color:#555;font-size:12px;padding:12px">등록된 작성자 없음<br>위에서 검색해 등록하세요</div>'; return; }
-  el.innerHTML = rows.map(w=>`
-    <div class="wr-item ${wrSelected&&wrSelected.cafe_id===w.cafe_id&&wrSelected.member_key===w.member_key?'selected':''}"
+function writerItemHtml(w){
+  const sel = wrSelected && wrSelected.cafe_id===w.cafe_id && wrSelected.member_key===w.member_key;
+  const opts = `<option value="0"${!w.group_id?' selected':''}>미분류</option>` +
+    wrGroups.map(g=>`<option value="${g.id}"${w.group_id===g.id?' selected':''}>${esc(g.name)}</option>`).join('');
+  return `
+    <div class="wr-item ${sel?'selected':''}"
          onclick='selectWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>
       <div style="display:flex;align-items:center;gap:6px">
         <b style="color:#e0e0e0;font-size:13px">${esc(w.nickname||w.masked_id)}</b>
@@ -898,10 +952,53 @@ async function loadWriterList() {
       <div style="font-size:11px;color:#888;margin-top:2px">
         ${esc(w.masked_id||'')} <span class="tag-badge">#${esc(w.member_tag||'')}</span>
       </div>
-      <div style="font-size:11px;margin-top:3px">
-        글 ${w.article_count} · <span style="color:#fcd34d">변경 ${w.changed_count}</span> · <span style="color:#fca5a5">삭제 ${w.deleted_count}</span>
+      <div style="font-size:11px;margin-top:3px;display:flex;align-items:center;gap:6px">
+        <span>글 ${w.article_count} · <span style="color:#fcd34d">변경 ${w.changed_count}</span> · <span style="color:#fca5a5">삭제 ${w.deleted_count}</span></span>
+        <div style="flex:1"></div>
+        <select onclick="event.stopPropagation()" title="그룹 이동"
+                onchange='event.stopPropagation();moveWriterGroup(${w.cafe_id},"${esc(w.member_key)}",this.value)'
+                style="background:#0d1b2e;border:1px solid #1a2a4a;color:#9db;font-size:10px;border-radius:4px;padding:1px 3px">${opts}</select>
       </div>
-    </div>`).join('');
+    </div>`;
+}
+
+async function loadWriterList() {
+  const [gr, rows] = await Promise.all([
+    fetch('/api/writer-groups').then(r=>r.json()),
+    fetch('/api/writers').then(r=>r.json()),
+  ]);
+  wrGroups = gr.groups || [];
+  const agName = activeGroupId ? ((wrGroups.find(g=>g.id===activeGroupId)||{}).name||'미분류') : '미분류';
+  const agEl = document.getElementById('wr-active-group');
+  if (agEl) agEl.innerHTML = `신규 등록 대상: <b style="color:#4ade80">${esc(agName)}</b> <span style="color:#556">(그룹의 ＋대상 클릭으로 변경)</span>`;
+
+  const byGroup = {};
+  (rows||[]).forEach(w=>{ const k = w.group_id||0; (byGroup[k]=byGroup[k]||[]).push(w); });
+  const sections = [...wrGroups.map(g=>({id:g.id, name:g.name})), {id:0, name:'미분류'}];
+
+  const el = document.getElementById('wr-list');
+  el.innerHTML = sections.map(sec=>{
+    const list = byGroup[sec.id] || [];
+    const collapsed = collapsedGroups.has(String(sec.id));
+    const isActive = (activeGroupId||0) === sec.id;
+    const gbtns = sec.id ? `
+        <span class="wr-gbtn ${isActive?'on':''}" title="신규 등록 대상으로" onclick="event.stopPropagation();setActiveGroup(${sec.id})">＋대상</span>
+        <span class="wr-gbtn" title="이름 변경" onclick='event.stopPropagation();renameGroup(${sec.id},${JSON.stringify(sec.name)})'>✎</span>
+        <span class="wr-gbtn del" title="그룹 삭제" onclick="event.stopPropagation();deleteGroup(${sec.id})">🗑</span>`
+      : `<span class="wr-gbtn ${isActive?'on':''}" title="신규 등록 대상으로" onclick="event.stopPropagation();setActiveGroup(null)">＋대상</span>`;
+    return `<div class="wr-group ${isActive?'active':''}">
+      <div class="wr-group-head" onclick="toggleGroup(${sec.id})">
+        <span class="wr-caret">${collapsed?'▸':'▾'}</span>
+        <b>${esc(sec.name)}</b>
+        <span class="wr-gcount">${list.length}</span>
+        <div style="flex:1"></div>
+        ${gbtns}
+      </div>
+      <div class="wr-group-body" style="${collapsed?'display:none':''}">
+        ${list.length ? list.map(writerItemHtml).join('') : '<div class="wr-empty">비어있음 — 위에서 검색해 등록하세요</div>'}
+      </div>
+    </div>`;
+  }).join('');
 }
 
 async function delWriter(cafe_id, member_key) {
@@ -1242,6 +1339,21 @@ function esc(s) {
 function fmtNum(n) {
   if (!n) return '0';
   return Number(n).toLocaleString('ko');
+}
+
+// 작성자 표시 (닉네임 + 멤버태그) — member_url 있으면 클릭 시 작성자 카페 페이지로
+function authorLink(a, opts = {}) {
+  const nick = esc(a.writer_nickname || '');
+  const tag = a.member_tag ? `<span class="tag-badge">#${esc(a.member_tag)}</span>` : '';
+  const inner = opts.nickColor
+    ? `<span style="color:${opts.nickColor}">${nick}</span> ${tag}`
+    : `${nick} ${tag}`;
+  if (a.member_url) {
+    return `<a href="${a.member_url}" target="_blank" title="작성자의 카페 게시글 보기 (스탭 로그인 필요)"
+              style="text-decoration:none;color:inherit;border-bottom:1px dotted #4a6fa5"
+              onclick="event.stopPropagation()">${inner} 👤</a>`;
+  }
+  return inner;
 }
 
 // 게시글 상태 뱃지 (4단계: 정상/제목변경/삭제/변경후삭제)
