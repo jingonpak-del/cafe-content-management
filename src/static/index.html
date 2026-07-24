@@ -41,6 +41,11 @@
   /* 우측 패널 */
   #right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   #right-tabs { background: #16213e; display: flex; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  #export-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
+  #export-modal.open { display: flex; }
+  #export-box { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; width: 460px; max-width: 92vw; }
+  #review-toolbar { background: #0d1b2e; display: flex; gap: 6px; align-items: center; padding: 6px 10px; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  #review-toolbar button { padding: 3px 10px; font-size: 12px; }
   .tab { padding: 8px 14px; cursor: pointer; font-size: 12px; color: #888; border-bottom: 2px solid transparent; }
   .tab:hover { color: #e0e0e0; }
   .tab.active { color: #e94560; border-bottom-color: #e94560; font-weight: bold; }
@@ -171,6 +176,7 @@
   <button class="btn-success" id="btn-watcher-toggle" onclick="toggleWatcher()">▶ 감시 시작</button>
   <button class="btn-secondary" onclick="openCompanyModal()">📊 업체 현황</button>
   <button class="btn-secondary" onclick="openWriterModal()">📝 글관리</button>
+  <button class="btn-secondary" onclick="openExportModal()">📥 엑셀 내보내기</button>
   <button class="btn-secondary" onclick="openSettings()">⚙ 설정</button>
 </div>
 
@@ -206,6 +212,12 @@
       <div class="tab" data-tab="title_changed" onclick="switchTab('title_changed')">제목변경 <span class="tab-badge" id="cnt-title">0</span></div>
       <div class="tab" data-tab="deleted" onclick="switchTab('deleted')">삭제 <span class="tab-badge" id="cnt-del">0</span></div>
       <div class="tab" data-tab="keyword" onclick="switchTab('keyword')">키워드 <span class="tab-badge" id="cnt-kw">0</span></div>
+    </div>
+    <div id="review-toolbar">
+      <button class="btn-secondary" onclick="selectAllUnreviewed()">☑ 전체선택</button>
+      <button class="btn-secondary" onclick="clearSelection()">☐ 해제</button>
+      <span id="review-sel-count" style="font-size:12px;color:#888;flex:1">선택 0건</span>
+      <button class="btn-success" id="btn-review-confirm" onclick="confirmReview()">✓ 확인</button>
     </div>
     <div id="right-content">
       <div class="empty-msg">이상 감지 항목 없음</div>
@@ -285,6 +297,56 @@
       </div>
       <div id="wr-articles-panel">
         <div id="wr-articles"><div class="empty-msg">왼쪽에서 작성자를 선택하세요</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 엑셀 내보내기 모달 -->
+<div id="export-modal">
+  <div id="export-box">
+    <div style="padding:12px 16px;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-weight:bold;color:#6ee7b7">📥 엑셀(CSV) 내보내기</span>
+      <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeExportModal()">✕</button>
+    </div>
+    <div style="padding:16px">
+      <div class="form-group">
+        <label class="form-label">카페</label>
+        <select id="exp-cafe" class="form-input"><option value="0">전체 카페</option></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">상태</label>
+        <select id="exp-status" class="form-input">
+          <option value="">전체</option>
+          <option value="active">활성</option>
+          <option value="deleted">삭제됨</option>
+          <option value="changed">제목변경</option>
+        </select>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">시작일 (작성일 기준)</label>
+          <input type="date" id="exp-start" class="form-input">
+        </div>
+        <div class="form-group">
+          <label class="form-label">종료일</label>
+          <input type="date" id="exp-end" class="form-input">
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:12px">
+        <button class="btn-secondary" onclick="setExpRange(7)">최근7일</button>
+        <button class="btn-secondary" onclick="setExpRange(30)">최근30일</button>
+        <button class="btn-secondary" onclick="setExpRange(0)">전체기간</button>
+      </div>
+      <div id="exp-info" style="font-size:12px;color:#888;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn-secondary" onclick="closeExportModal()">취소</button>
+        <button class="btn-success" onclick="doExport()">📥 다운로드</button>
+      </div>
+      <div style="font-size:11px;color:#555;margin-top:10px;line-height:1.5">
+        · 다운로드된 CSV는 엑셀에서 바로 열립니다 (한글 정상 표시)<br>
+        · 컬럼: 카페·게시판·작성일·상태·제목·작성자·멤버태그·업체명·조회/댓글/좋아요·링크·<b>본문·댓글</b> 등<br>
+        · 본문/댓글까지 포함하므로 건수가 많으면 다운로드에 시간이 걸릴 수 있습니다
       </div>
     </div>
   </div>
@@ -397,6 +459,8 @@ let articleSearch = '';
 let articleStatus = '';
 let searchTimer = null;
 let ws = null;
+let selectedFlagged = new Set();   // 이상감지 패널에서 확인 대기로 선택한 항목 (cafe-article)
+function flagKey(cafe_id, article_id) { return `${cafe_id}-${article_id}`; }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
 function connectWS() {
@@ -420,12 +484,12 @@ function handleWSEvent(msg) {
     showToast(`📌 새 글: ${msg.title.substring(0,30)}`);
   } else if (msg.type === 'title_changed') {
     updateStats();
-    loadFlagged();
+    if (selectedFlagged.size === 0) loadFlagged();   // 선택 중이면 재렌더 보류
     updateArticleRow(msg.article_id, {title_changed: 1});
     showToast(`🔄 제목 변경 [${msg.phase}]: ${msg.old_title.substring(0,20)} → ${msg.new_title.substring(0,20)}`);
   } else if (msg.type === 'deleted') {
     updateStats();
-    loadFlagged();
+    if (selectedFlagged.size === 0) loadFlagged();   // 선택 중이면 재렌더 보류
     updateArticleRow(msg.article_id, {status: 'deleted'});
     showToast(`🗑 삭제 감지: article ${msg.article_id}`);
   } else if (msg.type === 'session') {
@@ -605,6 +669,7 @@ async function loadFlagged(reset = true) {
   }
   data.rows.forEach(a => el.appendChild(makeFlaggedRow(a)));
   flaggedOffset += data.rows.length;
+  updateSelCount();
 }
 
 function makeFlaggedRow(a) {
@@ -629,9 +694,11 @@ function makeFlaggedRow(a) {
 
   div.innerHTML = `
     <div style="display:flex;gap:8px;align-items:flex-start">
-      <input type="checkbox" class="review-chk" ${a.reviewed?'checked':''}
-             title="확인 완료로 표시 (하단으로 이동)"
-             onclick="event.stopPropagation(); toggleReview(${a.cafe_id}, ${a.article_id}, this.checked)">
+      <input type="checkbox" class="review-chk"
+             data-cafe="${a.cafe_id}" data-article="${a.article_id}" data-reviewed="${a.reviewed?1:0}"
+             ${(a.reviewed || selectedFlagged.has(flagKey(a.cafe_id, a.article_id)))?'checked':''}
+             title="선택 후 상단 [확인] 버튼을 누르면 일괄 확인됩니다"
+             onclick="event.stopPropagation(); onReviewCheck(this)">
       <div style="flex:1;min-width:0;cursor:pointer" onclick="openDetail(${a.cafe_id}, ${a.article_id})">
         <div class="flagged-title">
           ${cafeBadge}<span style="color:${a.status==='deleted'?'#fca5a5':a.title_changed?'#fcd34d':'#e0e0e0'}">${esc(a.current_title || a.title)}</span>
@@ -649,17 +716,68 @@ function makeFlaggedRow(a) {
   return div;
 }
 
-async function toggleReview(cafe_id, article_id, reviewed) {
-  await fetch('/api/flagged/review', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({cafe_id, article_id, reviewed}),
+// 체크박스 = 선택(즉시 확인 아님). 상단 [확인] 버튼으로 일괄 커밋.
+// 단, 이미 확인된(reviewed) 항목을 해제하면 즉시 미확인으로 되돌린다.
+async function onReviewCheck(chk) {
+  const cafe_id = parseInt(chk.dataset.cafe), article_id = parseInt(chk.dataset.article);
+  const key = flagKey(cafe_id, article_id);
+  if (chk.dataset.reviewed === '1' && !chk.checked) {
+    // 이미 확인된 항목 해제 → 즉시 미확인으로 되돌림
+    await fetch('/api/flagged/review', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cafe_id, article_id, reviewed: false}),
+    });
+    showToast('확인 해제 (미확인으로 되돌림)');
+    loadFlagged();
+    return;
+  }
+  // 미확인 항목: 선택 Set 갱신 (즉시 확인 아님)
+  if (chk.checked) selectedFlagged.add(key); else selectedFlagged.delete(key);
+  updateSelCount();
+}
+
+function updateSelCount() {
+  const sel = selectedFlagged.size;
+  document.getElementById('review-sel-count').textContent = `선택 ${sel}건`;
+  document.getElementById('btn-review-confirm').textContent = `✓ 확인${sel?` (${sel})`:''}`;
+}
+
+function selectAllUnreviewed() {
+  document.querySelectorAll('#right-content .review-chk').forEach(c => {
+    if (c.dataset.reviewed === '0') {
+      c.checked = true;
+      selectedFlagged.add(flagKey(parseInt(c.dataset.cafe), parseInt(c.dataset.article)));
+    }
   });
-  // 재정렬 반영 (확인 시 하단으로, 해제 시 상단으로)
-  loadFlagged();
+  updateSelCount();
+}
+
+function clearSelection() {
+  document.querySelectorAll('#right-content .review-chk').forEach(c => {
+    if (c.dataset.reviewed === '0') c.checked = false;
+  });
+  selectedFlagged.clear();
+  updateSelCount();
+}
+
+async function confirmReview() {
+  const items = [...selectedFlagged].map(k => {
+    const [cafe_id, article_id] = k.split('-').map(Number);
+    return {cafe_id, article_id};
+  });
+  if (!items.length) { showToast('선택된 항목이 없습니다'); return; }
+  await fetch('/api/flagged/review_batch', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({items, reviewed: true}),
+  });
+  showToast(`${items.length}건 확인 처리`);
+  selectedFlagged.clear();
+  loadFlagged();  // 재정렬 (확인된 것 하단으로)
 }
 
 function switchTab(tab) {
   currentTab = tab;
+  selectedFlagged.clear();   // 탭 전환 시 선택 초기화
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
   loadFlagged();
 }
@@ -898,6 +1016,51 @@ async function openWriterModal() {
 }
 function closeWriterModal() {
   document.getElementById('writer-modal').classList.remove('open');
+}
+
+// ── 엑셀 내보내기 ─────────────────────────────────────────────────────────────
+async function openExportModal() {
+  const s = await fetch('/api/stats').then(r=>r.json());
+  const sel = document.getElementById('exp-cafe');
+  sel.innerHTML = '<option value="0">전체 카페</option>' +
+    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
+  document.getElementById('export-modal').classList.add('open');
+  updateExpInfo();
+}
+function closeExportModal() {
+  document.getElementById('export-modal').classList.remove('open');
+}
+function setExpRange(days) {
+  if (days > 0) {
+    const end = new Date(), start = new Date();
+    start.setDate(start.getDate() - days + 1);
+    document.getElementById('exp-start').value = start.toISOString().slice(0,10);
+    document.getElementById('exp-end').value = end.toISOString().slice(0,10);
+  } else {
+    document.getElementById('exp-start').value = '';
+    document.getElementById('exp-end').value = '';
+  }
+  updateExpInfo();
+}
+function updateExpInfo() {
+  const st = document.getElementById('exp-start').value;
+  const en = document.getElementById('exp-end').value;
+  document.getElementById('exp-info').textContent =
+    (st||en) ? `기간: ${st||'처음'} ~ ${en||'현재'}` : '전체 기간';
+}
+function doExport() {
+  const cafe_id = document.getElementById('exp-cafe').value;
+  const status = document.getElementById('exp-status').value;
+  const start = document.getElementById('exp-start').value;
+  const end = document.getElementById('exp-end').value;
+  const qs = new URLSearchParams();
+  if (cafe_id !== '0') qs.set('cafe_id', cafe_id);
+  if (status) qs.set('status', status);
+  if (start) qs.set('start', start);
+  if (end) qs.set('end', end);
+  // 브라우저 다운로드 (새 창 아닌 직접 다운로드)
+  window.location.href = '/api/export?' + qs.toString();
+  showToast('다운로드를 시작합니다...');
 }
 
 async function searchWriter() {
@@ -1392,7 +1555,11 @@ async function init() {
   await loadArticles();
   await loadFlagged();
   setInterval(updateStats, 15000);
-  setInterval(() => { loadArticles(); loadFlagged(); }, 30000);
+  setInterval(() => {
+    loadArticles();
+    // 확인 대기 선택 중이면 우측 패널 재렌더 보류 (선택 유지)
+    if (selectedFlagged.size === 0) loadFlagged();
+  }, 30000);
 }
 
 init();

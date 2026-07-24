@@ -270,6 +270,24 @@ class Database:
         self.conn.commit()
         return is_new
 
+    def upsert_body_as_article(self, cafe_id: int, article_id: int, body) -> bool:
+        """번호 역순 과거수집용: 본문(ArticleBody)만으로 게시글 레코드 생성.
+        목록 메타가 없으므로 본문에서 얻은 정보로 저장. 이미 있으면 False."""
+        ts = now_ms()
+        cur = self.conn.execute(
+            """INSERT OR IGNORE INTO articles
+               (cafe_id, article_id, menu_id, title, current_title,
+                writer_nickname, member_key, write_ts, first_seen_at,
+                cur_read, cur_comment, content_text, body_crawled)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+            (cafe_id, article_id, body.menu_id, body.title, body.title,
+             body.writer_nickname, body.member_key, body.write_ts, ts,
+             body.read_count, body.comment_count, body.content_text),
+        )
+        is_new = cur.rowcount > 0
+        self.conn.commit()
+        return is_new
+
     def _schedule_revisits(self, cafe_id: int, article_id: int, base_ts: int,
                            phases: dict | None = None):
         phases = phases or REVISIT_PHASES_NORMAL
@@ -342,14 +360,30 @@ class Database:
         return new
 
     def save_body(self, body):
+        # content_html은 저장하지 않는다 (content_text로 충분, DB 용량 폭증 방지).
         self.conn.execute(
-            """UPDATE articles SET content_text=?, content_html=?, body_crawled=1,
+            """UPDATE articles SET content_text=?, body_crawled=1,
                menu_id=COALESCE(NULLIF(menu_id,0), ?)
                WHERE cafe_id=? AND article_id=?""",
-            (body.content_text, body.content_html, body.menu_id,
-             body.cafe_id, body.article_id),
+            (body.content_text, body.menu_id, body.cafe_id, body.article_id),
         )
         self.conn.commit()
+
+    def update_revisit_counts(self, cafe_id: int, article_id: int,
+                              read_count: int, comment_count: int) -> int:
+        """재방문 시 최신 조회수·댓글수 반영. 이전 댓글수와의 차이를 반환(변동 감지용)."""
+        row = self.conn.execute(
+            "SELECT cur_comment FROM articles WHERE cafe_id=? AND article_id=?",
+            (cafe_id, article_id),
+        ).fetchone()
+        prev = (row["cur_comment"] if row else 0) or 0
+        self.conn.execute(
+            """UPDATE articles SET cur_read=?, cur_comment=?, cur_snapshot_at=?
+               WHERE cafe_id=? AND article_id=?""",
+            (read_count, comment_count, now_ms(), cafe_id, article_id),
+        )
+        self.conn.commit()
+        return (comment_count or 0) - prev
 
     def update_naver_id(self, cafe_id: int, article_id: int, naver_id: str):
         self.conn.execute(
@@ -818,6 +852,61 @@ class Database:
             params,
         ).fetchall()]
 
+    def iter_export_rows(self, cafe_id: int | None = None,
+                         start_ms: int | None = None, end_ms: int | None = None,
+                         status: str = ""):
+        """엑셀 내보내기용 게시글 행을 커서로 순회 (대량 스트리밍)."""
+        where, params = [], []
+        if cafe_id:
+            where.append("cafe_id=?"); params.append(cafe_id)
+        if start_ms is not None:
+            where.append("write_ts >= ?"); params.append(start_ms)
+        if end_ms is not None:
+            where.append("write_ts <= ?"); params.append(end_ms)
+        if status == "active":
+            where.append("status='active'")
+        elif status == "deleted":
+            where.append("status='deleted'")
+        elif status == "changed":
+            where.append("title_changed=1")
+        sql = ("""SELECT cafe_id, article_id, menu_name, write_ts, title, current_title,
+                         title_changed, status, deleted_at, writer_nickname, member_key,
+                         member_tag, member_level, company_name, cur_read, cur_comment,
+                         cur_like, first_seen_at, content_text
+                  FROM articles"""
+               + (" WHERE " + " AND ".join(where) if where else "")
+               + " ORDER BY write_ts DESC")
+        # 별도 커서로 순회 (fetchall 없이 메모리 절약)
+        cur = self.conn.execute(sql, params)
+        while True:
+            batch = cur.fetchmany(500)
+            if not batch:
+                break
+            for r in batch:
+                yield dict(r)
+
+    def get_comments_text(self, cafe_id: int, article_id: int, max_len: int = 30000) -> str:
+        """게시글 댓글을 한 셀 텍스트로 합침 ('닉네임: 내용' 줄바꿈 구분).
+        재방문마다 phase가 달라 같은 댓글이 중복 저장되므로 comment_id별 최신 1개만."""
+        rows = self.conn.execute(
+            """SELECT writer_nickname, content, is_deleted, MAX(crawled_at) AS latest
+               FROM comments
+               WHERE cafe_id=? AND article_id=?
+               GROUP BY comment_id
+               ORDER BY comment_id""",
+            (cafe_id, article_id),
+        ).fetchall()
+        parts = []
+        for r in rows:
+            if r["is_deleted"]:
+                continue
+            nick = (r["writer_nickname"] or "").strip()
+            content = (r["content"] or "").replace("\n", " ").strip()
+            if content:
+                parts.append(f"{nick}: {content}")
+        text = "\n".join(parts)
+        return text[:max_len]
+
     def get_flagged(self, flag_type: str = "all", limit: int = 100, offset: int = 0) -> list:
         """이상 감지 게시글: title_changed | deleted | keyword | all."""
         where = []
@@ -849,6 +938,59 @@ class Database:
         )
         self.conn.commit()
 
+    # ── 유지보수 (장기 안정성) ────────────────────────────────────────────
+
+    def maintenance(self, purge_html: bool = True,
+                    prune_done_days: int = 40, do_vacuum: bool = False,
+                    dedupe_comments: bool = True) -> dict:
+        """DB 정리. content_html 제거 + 오래된 완료 재방문 스케줄 삭제 + 댓글 중복 제거.
+        prune_done_days: 이 일수보다 오래전에 완료된(done=1) 스케줄 삭제 (추적 종료분).
+        dedupe_comments: 재방문마다 phase별로 중복 저장된 댓글을 comment_id별 최신 1개만 남김."""
+        c = self.conn.execute
+        result = {}
+        if purge_html:
+            cur = c("UPDATE articles SET content_html=NULL WHERE content_html IS NOT NULL AND content_html!=''")
+            result["html_cleared"] = cur.rowcount
+            self.conn.commit()
+        if dedupe_comments:
+            # comment_id별 최신(rowid 최대) 하나만 남기고 나머지 phase 중복 삭제
+            cur = c("""DELETE FROM comments WHERE rowid NOT IN (
+                         SELECT MAX(rowid) FROM comments
+                         GROUP BY cafe_id, article_id, comment_id)""")
+            result["comment_dupes_pruned"] = cur.rowcount
+            self.conn.commit()
+        if prune_done_days:
+            cutoff = now_ms() - prune_done_days * 86400 * 1000
+            cur = c("DELETE FROM revisit_schedule WHERE done=1 AND checked_at < ?", (cutoff,))
+            result["schedule_pruned"] = cur.rowcount
+            self.conn.commit()
+        if do_vacuum:
+            self.conn.execute("VACUUM")
+            result["vacuum"] = True
+        return result
+
+    def db_size_info(self) -> dict:
+        c = self.conn.execute
+        page_count = c("PRAGMA page_count").fetchone()[0]
+        page_size = c("PRAGMA page_size").fetchone()[0]
+        return {
+            "size_mb": round(page_count * page_size / 1024 / 1024, 1),
+            "articles": c("SELECT COUNT(*) FROM articles").fetchone()[0],
+            "comments": c("SELECT COUNT(*) FROM comments").fetchone()[0],
+            "schedule_done": c("SELECT COUNT(*) FROM revisit_schedule WHERE done=1").fetchone()[0],
+            "html_remaining": c("SELECT COUNT(*) FROM articles WHERE content_html IS NOT NULL AND content_html!=''").fetchone()[0],
+        }
+
+    def set_reviewed_batch(self, items: list, reviewed: bool):
+        """여러 게시글 확인 상태 일괄 변경. items=[{cafe_id, article_id}, ...]"""
+        ts = now_ms() if reviewed else None
+        self.conn.executemany(
+            "UPDATE articles SET reviewed=?, reviewed_at=? WHERE cafe_id=? AND article_id=?",
+            [(1 if reviewed else 0, ts, it["cafe_id"], it["article_id"]) for it in items],
+        )
+        self.conn.commit()
+        return len(items)
+
     def get_article_detail(self, cafe_id: int, article_id: int) -> dict | None:
         row = self.conn.execute(
             "SELECT * FROM articles WHERE cafe_id=? AND article_id=?",
@@ -865,9 +1007,12 @@ class Database:
             "SELECT * FROM keyword_hits WHERE cafe_id=? AND article_id=? ORDER BY found_at",
             (cafe_id, article_id),
         ).fetchall()]
+        # 재방문마다 phase가 달라 같은 댓글이 중복 저장되므로 comment_id별 최신 1개만.
+        # (phase='first'만 보면 신규 크롤 실패 후 재방문에서 잡힌 글의 댓글이 누락됨)
         d["comments"] = [dict(r) for r in self.conn.execute(
-            """SELECT * FROM comments WHERE cafe_id=? AND article_id=? AND phase='first'
-               ORDER BY comment_id""",
+            """SELECT *, MAX(crawled_at) AS latest FROM comments
+               WHERE cafe_id=? AND article_id=?
+               GROUP BY comment_id ORDER BY comment_id""",
             (cafe_id, article_id),
         ).fetchall()]
         return d

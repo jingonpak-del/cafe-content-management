@@ -19,6 +19,7 @@ data/cloudflared.log
 drain_revisits.py
 bulk_resolve.py
 backfill_tags.py
+backfill_comments.py
 test_*.py
 
 # 파이썬

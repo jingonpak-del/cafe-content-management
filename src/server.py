@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .db import Database, now_ms
@@ -171,6 +171,127 @@ def stats():
         db.close()
 
 
+@app.get("/api/export")
+def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = ""):
+    """기간·카페별 게시글을 CSV(엑셀)로 스트리밍 다운로드."""
+    import csv, io as _io
+    start_ms = end_ms = None
+    try:
+        if start:
+            start_ms = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+        if end:
+            e = datetime.strptime(end, "%Y-%m-%d")
+            end_ms = int((e.timestamp() + 86400) * 1000) - 1
+    except ValueError:
+        return JSONResponse({"error": "날짜 형식은 YYYY-MM-DD"}, status_code=400)
+
+    names = _cafe_names()
+    urls = _cafe_urls()
+    HEADERS = ["카페", "게시판", "작성일", "상태", "최초제목", "현재제목", "제목변경",
+               "작성자", "멤버태그", "마스킹ID", "등급", "업체명",
+               "조회수", "댓글수", "좋아요", "삭제일", "게시글링크", "작성자페이지",
+               "본문", "댓글"]
+
+    def _status_kr(r):
+        if r["status"] == "deleted" and r["title_changed"]:
+            return "변경후삭제"
+        if r["status"] == "deleted":
+            return "삭제"
+        if r["title_changed"]:
+            return "제목변경"
+        return "정상"
+
+    def generate():
+        db = _db()
+        try:
+            buf = _io.StringIO()
+            w = csv.writer(buf)
+            buf.write("﻿")   # 엑셀 UTF-8 인식용 BOM
+            w.writerow(HEADERS)
+            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+            for r in db.iter_export_rows(cafe_id or None, start_ms, end_ms, status):
+                cid = r["cafe_id"]
+                masked = ""  # 개별 마스킹ID는 member_cache/company_member에 있으나 조인 생략
+                w.writerow([
+                    names.get(cid, str(cid)), r.get("menu_name", ""),
+                    _fmt(r.get("write_ts")), _status_kr(r),
+                    r.get("title", ""), r.get("current_title", ""),
+                    "Y" if r.get("title_changed") else "",
+                    r.get("writer_nickname", ""), r.get("member_tag", ""), masked,
+                    r.get("member_level", ""), r.get("company_name", ""),
+                    r.get("cur_read", 0), r.get("cur_comment", 0), r.get("cur_like", 0),
+                    _fmt(r.get("deleted_at")),
+                    f"https://cafe.naver.com/ca-fe/cafes/{cid}/articles/{r['article_id']}",
+                    _member_page_url(urls.get(cid, ""), cid, r.get("member_key", "")),
+                    (r.get("content_text") or "").strip(),
+                    db.get_comments_text(cid, r["article_id"]) if (r.get("cur_comment") or 0) > 0 else "",
+                ])
+                yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+        finally:
+            db.close()
+
+    from datetime import datetime as _dt
+    cafe_tag = names.get(cafe_id, "전체") if cafe_id else "전체"
+    fname = f"cafe_export_{cafe_tag}_{start or 'all'}_{end or 'all'}.csv"
+    from urllib.parse import quote as _q
+    return StreamingResponse(
+        generate(), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_q(fname)}"},
+    )
+
+
+@app.get("/api/maintenance/status")
+def maintenance_status():
+    db = _db()
+    try:
+        return db.db_size_info()
+    finally:
+        db.close()
+
+
+@app.get("/api/past/status")
+def past_status():
+    """과거글 수집 진행 상황."""
+    db = _db()
+    try:
+        cfg = _load_config()
+        out = []
+        for c in cfg.get("cafes", []):
+            cid = c["cafe_id"]
+            phase = db.get_meta(f"past_{cid}_phase") or "list"
+            page = db.get_meta(f"past_{cid}_page") or "2"
+            num = db.get_meta(f"past_{cid}_num") or "-"
+            today = db.get_meta(f"past_{cid}_today") or "-"
+            rng = db.conn.execute(
+                "SELECT MIN(article_id), MAX(article_id), COUNT(*) FROM articles WHERE cafe_id=?",
+                (cid,)).fetchone()
+            out.append({
+                "cafe_id": cid, "name": c.get("name", ""),
+                "phase": phase, "list_page": page, "number_cursor": num,
+                "today": today, "min_id": rng[0], "max_id": rng[1], "count": rng[2],
+            })
+        return out
+    finally:
+        db.close()
+
+
+@app.post("/api/maintenance/run")
+async def maintenance_run(req: dict = None):
+    """DB 정리 실행 (content_html 제거 + 오래된 완료 스케줄 삭제 + 선택적 VACUUM)."""
+    req = req or {}
+    db = _db()
+    try:
+        res = db.maintenance(
+            purge_html=req.get("purge_html", True),
+            prune_done_days=req.get("prune_done_days", 40),
+            do_vacuum=req.get("vacuum", False),
+        )
+        res["after"] = db.db_size_info()
+        return {"ok": True, **res}
+    finally:
+        db.close()
+
+
 @app.get("/api/boards")
 def boards(cafe_id: int = 0):
     """카페별 게시판 목록 (필터 드롭다운용)."""
@@ -250,6 +371,23 @@ async def flagged_review(req: dict):
     try:
         db.set_reviewed(int(cafe_id), int(article_id), reviewed)
         return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/flagged/review_batch")
+async def flagged_review_batch(req: dict):
+    """여러 이상감지 항목을 한 번에 확인 처리."""
+    items = req.get("items") or []
+    reviewed = bool(req.get("reviewed", True))
+    items = [{"cafe_id": int(i["cafe_id"]), "article_id": int(i["article_id"])}
+             for i in items if i.get("cafe_id") is not None and i.get("article_id") is not None]
+    if not items:
+        return {"ok": True, "count": 0}
+    db = _db()
+    try:
+        n = db.set_reviewed_batch(items, reviewed)
+        return {"ok": True, "count": n}
     finally:
         db.close()
 

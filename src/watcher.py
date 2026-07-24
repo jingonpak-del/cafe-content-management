@@ -50,6 +50,13 @@ class Watcher:
         # 시트 동기화 / 회원해석 주기 상태
         self._last_sheet_sync = 0.0
         self._sheet_sync_gap = 1800.0   # 30분마다 시트 재동기화
+        # DB 유지보수 주기 (하루 1회)
+        self._last_maintenance = time.monotonic()   # 시작 직후엔 스킵
+        self._maintenance_gap = 86400.0
+        # 과거글 수집 주기 (30분마다 카페당 1페이지=50건 → 하루 ~2,400건)
+        self._last_past = 0.0
+        self._past_gap = 1800.0
+        self._past_daily_limit = 2000    # 카페당 하루 상한
 
     # ── 속도 제한 ──────────────────────────────────────────────────────────
 
@@ -224,6 +231,16 @@ class Watcher:
                 except Exception:
                     pass
 
+                # 최신 조회수·댓글수 반영 + 댓글 변동 감지 (24h 내 추가 댓글 등)
+                delta = self.db.update_revisit_counts(
+                    cafe_id, article_id, body.read_count, body.comment_count)
+                if delta:
+                    self.log(f"  💬 COMMENT [{article_id}] ({phase}) 댓글 {'+' if delta>0 else ''}{delta}건 변동")
+                    self._emit("comment_changed", {
+                        "cafe_id": cafe_id, "article_id": article_id,
+                        "phase": phase, "delta": delta, "count": body.comment_count,
+                    })
+
                 scan_article(
                     self.db, cafe_id, article_id,
                     body.title, body.content_text, comments, phase=phase,
@@ -278,8 +295,120 @@ class Watcher:
                 self.check_session()
                 self._maybe_sync_sheet()
                 self._resolve_some()
+                self._maybe_maintenance()
+                self._maybe_backfill_past()
 
             time.sleep(tick_s)
+
+    # ── 과거글 수집 (목록 역순 → 번호 역순) ─────────────────────────────────
+
+    def _past_today_count(self, cid: int) -> tuple[str, int]:
+        """오늘 날짜와 그날 수집량을 meta에서 읽음 (YYYYMMDD:count)."""
+        from datetime import datetime
+        today = datetime.now().strftime("%Y%m%d")
+        raw = self.db.get_meta(f"past_{cid}_today") or ""
+        if raw.startswith(today + ":"):
+            try:
+                return today, int(raw.split(":")[1])
+            except Exception:
+                return today, 0
+        return today, 0
+
+    def _maybe_backfill_past(self):
+        """30분마다 카페별로 과거글을 조금씩 수집 (하루 상한 내에서)."""
+        if (time.monotonic() - self._last_past) < self._past_gap:
+            return
+        self._last_past = time.monotonic()
+        for target in self.targets:
+            try:
+                self._backfill_past_one(target)
+            except Exception as e:
+                self.log(f"  ! 과거 수집 실패 [{target.name}]: {e}")
+
+    def _backfill_past_one(self, target):
+        cid = target.cafe_id
+        phase = self.db.get_meta(f"past_{cid}_phase") or "list"
+        if phase == "done":
+            return
+        today, cnt = self._past_today_count(cid)
+        if cnt >= self._past_daily_limit:
+            return   # 오늘 상한 도달
+
+        if phase == "list":
+            page = int(self.db.get_meta(f"past_{cid}_page") or 2)  # page1은 실시간이 담당
+            self._throttle()
+            arts = cafe_api._fetch_boardlist(cid, 0, 50, page, client=self.client)
+            if not arts:
+                self._switch_to_number_phase(cid)
+                return
+            page_min = min(a.article_id for a in arts)
+            # 롤백 감지: 이 페이지 최소 article_id가 이미 우리가 가진 최대 근처면 목록 한계
+            db_max = self.db.conn.execute(
+                "SELECT MAX(article_id) FROM articles WHERE cafe_id=?", (cid,)
+            ).fetchone()[0] or 0
+            if page_min >= db_max - 100:
+                self._switch_to_number_phase(cid)
+                return
+            new = 0
+            live = [a for a in arts if not (a.blinded or a.is_notice)]
+            for a in live:
+                if self.db.upsert_article(a):   # 신규면 재방문 스케줄 자동 → body/댓글 점진
+                    new += 1
+            self.db.update_counts_bulk(live)
+            self.db.set_meta(f"past_{cid}_page", str(page + 1))
+            self.db.set_meta(f"past_{cid}_today", f"{today}:{cnt + new}")
+            if new:
+                self.log(f"  📚 과거수집 [{target.name}] page{page}: 신규 {new}건 (오늘 {cnt+new})")
+
+        elif phase == "number":
+            num = int(self.db.get_meta(f"past_{cid}_num") or 0)
+            if num <= 1:
+                self.db.set_meta(f"past_{cid}_phase", "done")
+                self.log(f"  ✅ 과거수집 완료 [{target.name}]")
+                return
+            got = 0
+            # 한 배치에 최대 30개 번호 시도 (없는 번호/삭제 스킵)
+            tried = 0
+            while tried < 30 and (cnt + got) < self._past_daily_limit and num > 1:
+                tried += 1
+                num -= 1
+                if self.db.conn.execute(
+                    "SELECT 1 FROM articles WHERE cafe_id=? AND article_id=?", (cid, num)
+                ).fetchone():
+                    continue   # 이미 있음
+                self._throttle()
+                try:
+                    body = cafe_api.fetch_article_body(cid, num, menu_id=0, client=self.client)
+                    self.db.upsert_body_as_article(cid, num, body)
+                    got += 1
+                except cafe_api.ArticleGoneError:
+                    continue
+                except Exception:
+                    continue
+            self.db.set_meta(f"past_{cid}_num", str(num))
+            self.db.set_meta(f"past_{cid}_today", f"{today}:{cnt + got}")
+            if got:
+                self.log(f"  📚 과거수집(번호) [{target.name}] ~{num}: 신규 {got}건")
+
+    def _switch_to_number_phase(self, cid: int):
+        """목록 단계 종료 → 번호 역순 단계로. 시작 번호 = 현재 DB 최소 article_id - 1."""
+        db_min = self.db.conn.execute(
+            "SELECT MIN(article_id) FROM articles WHERE cafe_id=?", (cid,)
+        ).fetchone()[0] or 1
+        self.db.set_meta(f"past_{cid}_phase", "number")
+        self.db.set_meta(f"past_{cid}_num", str(db_min))
+        self.log(f"  📚 과거수집: 목록 한계 도달 → 번호 역순 전환 (from {db_min})")
+
+    def _maybe_maintenance(self):
+        """하루 1회 DB 정리 (content_html 제거 + 오래된 완료 스케줄 삭제)."""
+        if (time.monotonic() - self._last_maintenance) < self._maintenance_gap:
+            return
+        self._last_maintenance = time.monotonic()
+        try:
+            res = self.db.maintenance(purge_html=True, prune_done_days=40, do_vacuum=False)
+            self.log(f"  🧹 DB 정리: {res}")
+        except Exception as e:
+            self.log(f"  ! DB 정리 실패: {e}")
 
     # ── 시트 동기화 / 회원 해석 ────────────────────────────────────────────
 
