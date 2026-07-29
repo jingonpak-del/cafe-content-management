@@ -1,9 +1,18 @@
 """SQLite persistence — 카페 게시글 감시 시스템."""
 from __future__ import annotations
 
+import re
 import sqlite3
 import time
 from pathlib import Path
+
+
+def normalize_title(title: str) -> str:
+    """중복 판정용 제목 정규화: 공백·특수문자 제거, 소문자.
+    '★이벤트★' 와 '이벤트 !!' 를 같은 것으로 취급."""
+    if not title:
+        return ""
+    return re.sub(r"[^\w가-힣]", "", title).lower()
 
 # 재방문 체크포인트 (초 단위). H=시간.
 # 일반글: 10일까지 6회. 업체글: 30일까지 12회(더 촘촘 + 연장).
@@ -221,9 +230,15 @@ class Database:
         new_flag_ts = "flag_ts" not in cols
         for col, decl in (("member_tag", "TEXT"), ("member_level", "TEXT"),
                           ("reviewed", "INTEGER DEFAULT 0"), ("reviewed_at", "INTEGER"),
-                          ("deleted_at", "INTEGER"), ("flag_ts", "INTEGER")):
+                          ("deleted_at", "INTEGER"), ("flag_ts", "INTEGER"),
+                          ("norm_title", "TEXT"), ("is_duplicate", "INTEGER DEFAULT 0"),
+                          ("dup_count", "INTEGER DEFAULT 0"),
+                          ("delete_type", "TEXT"),          # staff | self | NULL(미정)
+                          ("deleted_by_nick", "TEXT"), ("deleted_by_tag", "TEXT"),
+                          ("deleted_by_id", "TEXT")):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {decl}")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dup ON articles (cafe_id, member_key, norm_title)")
         # 작성자 그룹: 기존 watched_writer 에 group_id 추가
         ww_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(watched_writer)")}
         if "group_id" not in ww_cols:
@@ -254,37 +269,87 @@ class Database:
     def upsert_article(self, a, session_ok: bool = False) -> bool:
         """신규 게시글 삽입. True=신규, False=기존."""
         ts = now_ms()
+        norm = normalize_title(a.title)
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO articles
                (cafe_id, article_id, menu_id, menu_name, title, current_title,
                 writer_nickname, member_key, write_ts, first_seen_at,
-                cur_read, cur_comment, cur_like, cur_snapshot_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                cur_read, cur_comment, cur_like, cur_snapshot_at, norm_title)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (a.cafe_id, a.article_id, a.menu_id, a.menu_name, a.title, a.title,
              a.writer_nickname, a.member_key, a.write_ts, ts,
-             a.read_count, a.comment_count, a.like_count, ts),
+             a.read_count, a.comment_count, a.like_count, ts, norm),
         )
         is_new = cur.rowcount > 0
         if is_new:
             self._schedule_revisits(a.cafe_id, a.article_id, ts)
+            self._mark_duplicates(a.cafe_id, a.member_key, norm)
         self.conn.commit()
         return is_new
+
+    def backfill_duplicates(self) -> dict:
+        """기존 전체 데이터에 norm_title 채우고 중복글 일괄 판정."""
+        # 1) norm_title 비어있는 것 채우기
+        rows = self.conn.execute(
+            "SELECT cafe_id, article_id, title FROM articles WHERE norm_title IS NULL OR norm_title=''"
+        ).fetchall()
+        for r in rows:
+            self.conn.execute(
+                "UPDATE articles SET norm_title=? WHERE cafe_id=? AND article_id=?",
+                (normalize_title(r["title"]), r["cafe_id"], r["article_id"]),
+            )
+        self.conn.commit()
+        # 2) 초기화 후 중복 그룹(같은 cafe+member+norm_title 2개 이상) 판정
+        self.conn.execute("UPDATE articles SET is_duplicate=0, dup_count=0")
+        self.conn.execute(
+            """UPDATE articles SET is_duplicate=1, dup_count=(
+                   SELECT COUNT(*) FROM articles b
+                   WHERE b.cafe_id=articles.cafe_id AND b.member_key=articles.member_key
+                     AND b.norm_title=articles.norm_title)
+               WHERE member_key!='' AND norm_title!='' AND (
+                   SELECT COUNT(*) FROM articles b
+                   WHERE b.cafe_id=articles.cafe_id AND b.member_key=articles.member_key
+                     AND b.norm_title=articles.norm_title) >= 2"""
+        )
+        self.conn.commit()
+        dup = self.conn.execute("SELECT COUNT(*) FROM articles WHERE is_duplicate=1").fetchone()[0]
+        return {"norm_filled": len(rows), "duplicates": dup}
+
+    def _mark_duplicates(self, cafe_id: int, member_key: str, norm_title: str):
+        """같은 작성자가 같은(정규화) 제목을 2개 이상 → 그 그룹 전부 중복 표시."""
+        if not member_key or not norm_title:
+            return
+        ids = [r[0] for r in self.conn.execute(
+            "SELECT article_id FROM articles WHERE cafe_id=? AND member_key=? AND norm_title=?",
+            (cafe_id, member_key, norm_title),
+        ).fetchall()]
+        n = len(ids)
+        if n >= 2:
+            self.conn.execute(
+                f"""UPDATE articles SET is_duplicate=1, dup_count=?,
+                    flag_ts=COALESCE(flag_ts, ?)
+                    WHERE cafe_id=? AND member_key=? AND norm_title=?""",
+                (n, now_ms(), cafe_id, member_key, norm_title),
+            )
 
     def upsert_body_as_article(self, cafe_id: int, article_id: int, body) -> bool:
         """번호 역순 과거수집용: 본문(ArticleBody)만으로 게시글 레코드 생성.
         목록 메타가 없으므로 본문에서 얻은 정보로 저장. 이미 있으면 False."""
         ts = now_ms()
+        norm = normalize_title(body.title)
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO articles
                (cafe_id, article_id, menu_id, title, current_title,
                 writer_nickname, member_key, write_ts, first_seen_at,
-                cur_read, cur_comment, content_text, body_crawled)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)""",
+                cur_read, cur_comment, content_text, body_crawled, norm_title)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
             (cafe_id, article_id, body.menu_id, body.title, body.title,
              body.writer_nickname, body.member_key, body.write_ts, ts,
-             body.read_count, body.comment_count, body.content_text),
+             body.read_count, body.comment_count, body.content_text, norm),
         )
         is_new = cur.rowcount > 0
+        if is_new:
+            self._mark_duplicates(cafe_id, body.member_key, norm)
         self.conn.commit()
         return is_new
 
@@ -412,10 +477,11 @@ class Database:
 
     def mark_deleted(self, cafe_id: int, article_id: int):
         ts = now_ms()
-        # 새 이상 발생 → flag_ts 갱신, reviewed 리셋 (다시 미확인으로 상단 배치)
+        # 새 이상 발생 → flag_ts 갱신, reviewed 리셋 (다시 미확인으로 상단 배치).
+        # delete_type은 미정(NULL) — 이후 스탭삭제 동기화에서 staff/self 확정.
         self.conn.execute(
-            """UPDATE articles SET status='deleted', deleted_at=?, flag_ts=?, reviewed=0
-               WHERE cafe_id=? AND article_id=?""",
+            """UPDATE articles SET status='deleted', deleted_at=COALESCE(deleted_at,?),
+               flag_ts=?, reviewed=0 WHERE cafe_id=? AND article_id=?""",
             (ts, ts, cafe_id, article_id),
         )
         self.conn.execute(
@@ -423,6 +489,38 @@ class Database:
             (cafe_id, article_id),
         )
         self.conn.commit()
+
+    def apply_staff_deletion(self, ra) -> bool:
+        """스탭 삭제 목록의 항목을 반영. ra=RemovedArticle.
+        해당 게시글을 status='deleted', delete_type='staff' + 삭제자 기록.
+        우리 DB에 있는 글만 갱신 (없으면 무시). True=갱신됨."""
+        ts = now_ms()
+        cur = self.conn.execute(
+            """UPDATE articles SET status='deleted', delete_type='staff',
+                   deleted_at=COALESCE(deleted_at, ?),
+                   deleted_by_nick=?, deleted_by_tag=?, deleted_by_id=?
+               WHERE cafe_id=? AND article_id=?""",
+            (ts, ra.remover_nick, ra.remover_tag, ra.remover_masked_id,
+             ra.cafe_id, ra.article_id),
+        )
+        if cur.rowcount:
+            self.conn.execute(
+                "UPDATE revisit_schedule SET done=1 WHERE cafe_id=? AND article_id=?",
+                (ra.cafe_id, ra.article_id))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def finalize_self_deletions(self, grace_hours: int = 6) -> int:
+        """삭제 감지 후 grace_hours 지났는데 아직 delete_type 미정(NULL)이면 자삭으로 확정.
+        (그 시간 동안 스탭 삭제 목록에 안 나타났으면 작성자 본인 삭제로 판단)"""
+        cutoff = now_ms() - grace_hours * 3600 * 1000
+        cur = self.conn.execute(
+            """UPDATE articles SET delete_type='self'
+               WHERE status='deleted' AND delete_type IS NULL AND deleted_at <= ?""",
+            (cutoff,),
+        )
+        self.conn.commit()
+        return cur.rowcount
 
     def check_title_change(self, cafe_id: int, article_id: int, new_title: str, phase: str) -> bool:
         """제목 비교 후 변경 시 history 저장. True=변경됨."""
@@ -872,7 +970,8 @@ class Database:
         sql = ("""SELECT cafe_id, article_id, menu_name, write_ts, title, current_title,
                          title_changed, status, deleted_at, writer_nickname, member_key,
                          member_tag, member_level, company_name, cur_read, cur_comment,
-                         cur_like, first_seen_at, content_text
+                         cur_like, first_seen_at, content_text,
+                         delete_type, deleted_by_nick, deleted_by_tag
                   FROM articles"""
                + (" WHERE " + " AND ".join(where) if where else "")
                + " ORDER BY write_ts DESC")
@@ -908,16 +1007,19 @@ class Database:
         return text[:max_len]
 
     def get_flagged(self, flag_type: str = "all", limit: int = 100, offset: int = 0) -> list:
-        """이상 감지 게시글: title_changed | deleted | keyword | all."""
-        where = []
+        """이상 감지 게시글: title_changed | deleted | keyword | duplicate | all.
+        스탭삭제(delete_type='staff')된 글은 이미 관리자가 조치한 것이므로 우측 패널에서 제외."""
+        where = ["COALESCE(a.delete_type,'') != 'staff'"]   # 스탭삭제 숨김 (기록은 보존)
         if flag_type == "title_changed":
             where.append("a.title_changed=1")
         elif flag_type == "deleted":
             where.append("a.status='deleted'")
         elif flag_type == "keyword":
             where.append("a.has_keyword_hit=1")
+        elif flag_type == "duplicate":
+            where.append("a.is_duplicate=1")
         else:
-            where.append("(a.title_changed=1 OR a.status='deleted' OR a.has_keyword_hit=1)")
+            where.append("(a.title_changed=1 OR a.status='deleted' OR a.has_keyword_hit=1 OR a.is_duplicate=1)")
 
         sql = f"""SELECT a.*,
                         GROUP_CONCAT(DISTINCT h.keyword_text) AS hit_keywords
@@ -1061,9 +1163,12 @@ class Database:
         return {
             "total":        c("SELECT COUNT(*) FROM articles").fetchone()[0],
             "active":       c("SELECT COUNT(*) FROM articles WHERE status='active'").fetchone()[0],
-            "deleted":      c("SELECT COUNT(*) FROM articles WHERE status='deleted'").fetchone()[0],
+            # 우측 삭제 탭 배지용: 스탭삭제 제외한 삭제(자삭+미정)
+            "deleted":      c("SELECT COUNT(*) FROM articles WHERE status='deleted' AND COALESCE(delete_type,'')!='staff'").fetchone()[0],
+            "deleted_staff":c("SELECT COUNT(*) FROM articles WHERE delete_type='staff'").fetchone()[0],
             "title_changed":c("SELECT COUNT(*) FROM articles WHERE title_changed=1").fetchone()[0],
             "keyword_hit":  c("SELECT COUNT(*) FROM articles WHERE has_keyword_hit=1").fetchone()[0],
+            "duplicate":    c("SELECT COUNT(*) FROM articles WHERE is_duplicate=1").fetchone()[0],
             "with_company": c("SELECT COUNT(*) FROM articles WHERE company_name IS NOT NULL AND company_name!=''").fetchone()[0],
             "keywords":     c("SELECT COUNT(*) FROM keywords WHERE is_active=1").fetchone()[0],
             "companies":    c("SELECT COUNT(DISTINCT company_name) FROM company_master").fetchone()[0],

@@ -57,6 +57,9 @@ class Watcher:
         self._last_past = 0.0
         self._past_gap = 1800.0
         self._past_daily_limit = 2000    # 카페당 하루 상한
+        # 스탭 삭제글 동기화 주기 (30분)
+        self._last_removed = 0.0
+        self._removed_gap = 1800.0
 
     # ── 속도 제한 ──────────────────────────────────────────────────────────
 
@@ -297,8 +300,49 @@ class Watcher:
                 self._resolve_some()
                 self._maybe_maintenance()
                 self._maybe_backfill_past()
+                self._maybe_sync_removed()
 
             time.sleep(tick_s)
+
+    # ── 스탭 삭제글 동기화 (자삭/스탭삭제 판별) ──────────────────────────────
+
+    def _maybe_sync_removed(self):
+        """30분마다 스탭 삭제 목록을 크롤해 매칭글을 staff로 표시하고,
+        유예 지난 미정 삭제글은 self(자삭)로 확정."""
+        if not self.session_ok:
+            return
+        if (time.monotonic() - self._last_removed) < self._removed_gap:
+            return
+        self._last_removed = time.monotonic()
+        for target in self.targets:
+            cid = target.cafe_id
+            staff_found = 0
+            try:
+                # 최근 여러 페이지 훑기 (신규 삭제는 앞페이지에 나타남)
+                for page in range(1, 11):
+                    self._throttle()
+                    removed = cafe_api.fetch_removed_articles(cid, page, client=self.client)
+                    if not removed:
+                        break
+                    page_new = 0
+                    for ra in removed:
+                        if self.db.apply_staff_deletion(ra):
+                            page_new += 1
+                    staff_found += page_new
+                    # 이 페이지에서 우리 DB와 매칭된 게 하나도 없으면 더 과거는 스킵
+                    if page_new == 0 and page >= 3:
+                        break
+            except Exception as e:
+                self.log(f"  ! 스탭삭제 동기화 실패 [{target.name}]: {e}")
+            if staff_found:
+                self.log(f"  🛡️ 스탭삭제 반영 [{target.name}]: {staff_found}건")
+        # 유예 지난 미정 삭제 → 자삭 확정
+        try:
+            n = self.db.finalize_self_deletions(grace_hours=6)
+            if n:
+                self.log(f"  👤 자삭 확정: {n}건")
+        except Exception:
+            pass
 
     # ── 과거글 수집 (목록 역순 → 번호 역순) ─────────────────────────────────
 

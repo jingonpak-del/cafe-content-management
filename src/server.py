@@ -187,7 +187,7 @@ def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = "
 
     names = _cafe_names()
     urls = _cafe_urls()
-    HEADERS = ["카페", "게시판", "작성일", "상태", "최초제목", "현재제목", "제목변경",
+    HEADERS = ["카페", "게시판", "작성일", "상태", "삭제유형", "삭제자", "최초제목", "현재제목", "제목변경",
                "작성자", "멤버태그", "마스킹ID", "등급", "업체명",
                "조회수", "댓글수", "좋아요", "삭제일", "게시글링크", "작성자페이지",
                "본문", "댓글"]
@@ -200,6 +200,14 @@ def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = "
         if r["title_changed"]:
             return "제목변경"
         return "정상"
+
+    def _del_kr(r):
+        dt = r.get("delete_type")
+        if dt == "staff":
+            return "스탭삭제"
+        if dt == "self":
+            return "자삭"
+        return "" if r["status"] != "deleted" else "미정"
 
     def generate():
         db = _db()
@@ -215,6 +223,7 @@ def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = "
                 w.writerow([
                     names.get(cid, str(cid)), r.get("menu_name", ""),
                     _fmt(r.get("write_ts")), _status_kr(r),
+                    _del_kr(r), r.get("deleted_by_nick", "") or "",
                     r.get("title", ""), r.get("current_title", ""),
                     "Y" if r.get("title_changed") else "",
                     r.get("writer_nickname", ""), r.get("member_tag", ""), masked,
@@ -245,6 +254,16 @@ def maintenance_status():
     db = _db()
     try:
         return db.db_size_info()
+    finally:
+        db.close()
+
+
+@app.post("/api/maintenance/dedupe")
+async def maintenance_dedupe():
+    """기존 전체 데이터에 중복글 판정 일괄 적용."""
+    db = _db()
+    try:
+        return {"ok": True, **db.backfill_duplicates()}
     finally:
         db.close()
 
@@ -413,8 +432,17 @@ def article_detail(cafe_id: int, article_id: int):
                              "str": h.get("changed_str"), "phase": h.get("check_phase"),
                              "old": h.get("old_title"), "text": h.get("new_title")})
         if d.get("status") == "deleted":
+            dt = d.get("delete_type")
+            if dt == "staff":
+                by = d.get("deleted_by_nick") or ""
+                del_label = f"스탭삭제 (삭제자: {by})"
+            elif dt == "self":
+                del_label = "자삭 (작성자 본인)"
+            else:
+                del_label = "삭제 (유형 확인 중)"
             timeline.append({"type": "deleted", "ts": d.get("deleted_at"),
-                             "str": d.get("deleted_str")})
+                             "str": d.get("deleted_str"), "delete_type": dt,
+                             "text": del_label})
         timeline.sort(key=lambda x: x.get("ts") or 0)
         d["timeline"] = timeline
         return d

@@ -532,3 +532,70 @@ def html_to_text(html: str) -> str:
     text = soup.get_text("\n")
     lines = [ln.strip() for ln in text.splitlines()]
     return "\n".join(ln for ln in lines if ln)
+
+
+# ── 스탭 삭제글 목록 (ManageRemoveArticleList) ────────────────────────────────
+# 작성자≠삭제자인 삭제글(=스탭/매니저가 지운 글) 이력. 스탭 세션 필요.
+REMOVE_LIST_URL = "https://cafe.naver.com/ManageRemoveArticleList.nhn"
+_REMOVE_RESTORE_RE = re.compile(r"Restore\|(\d+)\|(\d+)")
+_MEMBER_CELL_RE = re.compile(r"^(.*?)\((\w+\*+)\)\s*(\w+)?$")
+
+
+@dataclass(frozen=True)
+class RemovedArticle:
+    cafe_id: int
+    article_id: int
+    menu_id: int
+    menu_name: str
+    title: str
+    writer_nick: str
+    writer_masked_id: str
+    writer_tag: str
+    remover_nick: str
+    remover_masked_id: str
+    remover_tag: str
+    removed_date: str      # 'YYYY.MM.DD.'
+
+
+def _parse_member_cell(text: str) -> tuple[str, str, str]:
+    """'닉네임(mask****) 멤버태그' → (닉, 마스킹id, 태그)."""
+    text = (text or "").strip()
+    m = _MEMBER_CELL_RE.match(text)
+    if m:
+        return m.group(1).strip(), m.group(2), (m.group(3) or "")
+    return text, "", ""
+
+
+def fetch_removed_articles(cafe_id: int, page: int = 1,
+                           client: httpx.Client | None = None) -> list[RemovedArticle]:
+    """스탭/매니저가 삭제한 게시글 목록 (한 페이지). 매니저 권한 세션 필요."""
+    own = client is None
+    client = client or make_client()
+    try:
+        r = client.get(REMOVE_LIST_URL,
+                       params={"search.clubid": cafe_id, "search.page": page},
+                       headers={"Referer": f"https://cafe.naver.com/ManageWholeMember.nhn?clubid={cafe_id}"},
+                       timeout=15)
+        soup = BeautifulSoup(r.text, "html.parser")
+        out: list[RemovedArticle] = []
+        for tr in soup.find_all("tr"):
+            m = _REMOVE_RESTORE_RE.search(str(tr))
+            if not m:
+                continue
+            tds = tr.find_all("td")
+            if len(tds) < 5:
+                continue
+            menu_id, article_id = int(m.group(1)), int(m.group(2))
+            menu_name = tds[0].get_text(" ", strip=True)
+            title = tds[1].get_text(" ", strip=True)
+            wn, wm, wt = _parse_member_cell(tds[2].get_text(" ", strip=True))
+            rn, rm, rt = _parse_member_cell(tds[3].get_text(" ", strip=True))
+            date = tds[4].get_text(" ", strip=True)
+            out.append(RemovedArticle(
+                cafe_id, article_id, menu_id, menu_name, title,
+                wn, wm, wt, rn, rm, rt, date,
+            ))
+        return out
+    finally:
+        if own:
+            client.close()

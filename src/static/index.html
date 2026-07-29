@@ -68,6 +68,7 @@
   .flag-delete { background: #7f1d1d; color: #fca5a5; }
   .flag-title { background: #4a3200; color: #fcd34d; }
   .flag-keyword { background: #1a3a5c; color: #93c5fd; }
+  .flag-dup { background: #4a1d4a; color: #e9a5fc; }
   .company-badge { background: #1a472a; color: #4ade80; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
   .level-badge { background: #2a2352; color: #b9a5ff; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
   .tag-badge { color: #556; font-size: 10px; }
@@ -114,6 +115,7 @@
   .wr-status-normal { background: #1a472a; color: #4ade80; }
   .wr-status-changed { background: #4a3200; color: #fcd34d; }
   .wr-status-deleted { background: #7f1d1d; color: #fca5a5; }
+  .wr-status-staff { background: #1e3a5f; color: #93c5fd; }
   /* 작성자 그룹 */
   .wr-group { border-bottom: 1px solid #0f3460; }
   .wr-group.active { background: #0d1b2e; }
@@ -211,6 +213,7 @@
       <div class="tab active" data-tab="all" onclick="switchTab('all')">전체 <span class="tab-badge" id="cnt-all">0</span></div>
       <div class="tab" data-tab="title_changed" onclick="switchTab('title_changed')">제목변경 <span class="tab-badge" id="cnt-title">0</span></div>
       <div class="tab" data-tab="deleted" onclick="switchTab('deleted')">삭제 <span class="tab-badge" id="cnt-del">0</span></div>
+      <div class="tab" data-tab="duplicate" onclick="switchTab('duplicate')">중복 <span class="tab-badge" id="cnt-dup">0</span></div>
       <div class="tab" data-tab="keyword" onclick="switchTab('keyword')">키워드 <span class="tab-badge" id="cnt-kw">0</span></div>
     </div>
     <div id="review-toolbar">
@@ -510,9 +513,11 @@ async function updateStats() {
   const cafeNames = (stats.cafe_names || []).map(c => c.name).join(', ');
   document.getElementById('hd-cafe').textContent = cafeNames || '카페 미설정';
   document.getElementById('cnt-all').textContent =
-    stats.deleted + stats.title_changed + stats.keyword_hit;
+    stats.deleted + stats.title_changed + stats.keyword_hit + (stats.duplicate||0);
   document.getElementById('cnt-title').textContent = stats.title_changed;
   document.getElementById('cnt-del').textContent = stats.deleted;
+  const dupEl = document.getElementById('cnt-dup');
+  if (dupEl) dupEl.textContent = stats.duplicate || 0;
   document.getElementById('cnt-kw').textContent = stats.keyword_hit;
   updateSessionBadge(stats.session_ok);
   updateWatcherBadge(stats.running);
@@ -598,6 +603,7 @@ function makeArticleRow(a) {
   const flags = [];
   if (a.status === 'deleted') flags.push('<span class="flag flag-delete">삭제</span>');
   if (a.title_changed) flags.push('<span class="flag flag-title">제목변경</span>');
+  if (a.is_duplicate) flags.push(`<span class="flag flag-dup">중복${a.dup_count?'×'+a.dup_count:''}</span>`);
   if (a.has_keyword_hit) flags.push('<span class="flag flag-keyword">키워드</span>');
 
   const company = a.company_name ? `<span class="company-badge">🏢 ${esc(a.company_name)}</span>` : '';
@@ -677,8 +683,9 @@ function makeFlaggedRow(a) {
   div.className = 'flagged-row' + (a.reviewed ? ' reviewed' : '');
 
   const flags = [];
-  if (a.status === 'deleted') flags.push('<span class="flag flag-delete">삭제됨</span>');
+  if (a.status === 'deleted') flags.push(`<span class="flag flag-delete">${a.delete_type==='self'?'👤자삭':'삭제됨'}</span>`);
   if (a.title_changed) flags.push('<span class="flag flag-title">제목변경</span>');
+  if (a.is_duplicate) flags.push(`<span class="flag flag-dup">중복${a.dup_count?'×'+a.dup_count:''}</span>`);
   if (a.has_keyword_hit) flags.push('<span class="flag flag-keyword">키워드히트</span>');
   const company = a.company_name ? `<span class="company-badge">${esc(a.company_name)}</span>` : '';
   const naverId = a.naver_id ? ` (${esc(a.naver_id)})` : '';
@@ -800,17 +807,19 @@ async function openDetail(cafe_id, article_id) {
     a.timeline.forEach((t, i) => {
       const isLast = i === a.timeline.length - 1;
       let icon, color, label;
+      let delLabel = '';
       if (t.type==='created') { icon='📝'; color='#4ade80'; label='작성'; }
       else if (t.type==='title_changed') { icon='🟡'; color='#fcd34d'; label='제목변경'+(t.phase?` (${esc(t.phase)})`:''); }
-      else { icon='🔴'; color='#fca5a5'; label='삭제'; }
+      else { icon = t.delete_type==='staff'?'🛡️':(t.delete_type==='self'?'👤':'🔴');
+             color = t.delete_type==='staff'?'#93c5fd':'#fca5a5'; label=''; delLabel=t.text||'삭제'; }
       histHTML += `<div style="display:flex;gap:8px;padding:4px 0">
         <div style="display:flex;flex-direction:column;align-items:center">
           <span>${icon}</span>
           ${!isLast?'<div style="width:1px;flex:1;background:#0f3460;margin:2px 0"></div>':''}
         </div>
         <div style="flex:1;padding-bottom:6px">
-          <div style="font-size:12px;color:${color};font-weight:bold">${label} <span style="color:#666;font-weight:normal">${esc(t.str||'')}</span></div>
-          ${t.type==='title_changed' ? `<div style="font-size:12px;color:#aaa">"${esc(t.old)}"</div><div style="font-size:12px;color:#fcd34d">→ "${esc(t.text)}"</div>` : (t.text?`<div style="font-size:12px;color:#aaa">"${esc(t.text)}"</div>`:'')}
+          <div style="font-size:12px;color:${color};font-weight:bold">${label||esc(delLabel)} <span style="color:#666;font-weight:normal">${esc(t.str||'')}</span></div>
+          ${t.type==='title_changed' ? `<div style="font-size:12px;color:#aaa">"${esc(t.old)}"</div><div style="font-size:12px;color:#fcd34d">→ "${esc(t.text)}"</div>` : (t.type==='created' && t.text?`<div style="font-size:12px;color:#aaa">"${esc(t.text)}"</div>`:'')}
         </div>
       </div>`;
     });
@@ -1520,11 +1529,18 @@ function authorLink(a, opts = {}) {
 }
 
 // 게시글 상태 뱃지 (4단계: 정상/제목변경/삭제/변경후삭제)
+function delKind(a) {
+  // 삭제 유형: 스탭삭제 / 자삭 / (미정)삭제
+  if (a.delete_type === 'staff') return {label:'🛡️스탭삭제', cls:'wr-status-staff', tip:a.deleted_by_nick?('삭제자: '+a.deleted_by_nick):''};
+  if (a.delete_type === 'self')  return {label:'👤자삭', cls:'wr-status-deleted', tip:'작성자 본인 삭제'};
+  return {label:'삭제', cls:'wr-status-deleted', tip:'유형 확인 중'};
+}
 function statusBadge(a) {
-  if (a.status === 'deleted' && a.title_changed)
-    return '<span class="wr-status wr-status-deleted">변경후삭제</span>';
-  if (a.status === 'deleted')
-    return '<span class="wr-status wr-status-deleted">삭제</span>';
+  if (a.status === 'deleted') {
+    const d = delKind(a);
+    const pre = a.title_changed ? '변경후' : '';
+    return `<span class="wr-status ${d.cls}" title="${esc(d.tip)}">${pre}${d.label}</span>`;
+  }
   if (a.title_changed)
     return '<span class="wr-status wr-status-changed">제목변경</span>';
   return '<span class="wr-status wr-status-normal">정상</span>';
