@@ -560,6 +560,236 @@ def company_mapping():
         db.close()
 
 
+@app.get("/api/companies/members")
+def company_members():
+    """업체 아이디 리스트 (구글시트 연동 아이디 → 멤버태그·최근닉네임·마지막작성일)."""
+    db = _db()
+    try:
+        names = _cafe_names()
+        rows = db.get_company_member_list()
+        for r in rows:
+            r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
+            r["nickname"] = r.get("last_nick") or r.get("resolved_nick") or ""
+            r["last_write_str"] = _fmt(r.get("last_write_ts"))
+        return rows
+    finally:
+        db.close()
+
+
+# ── 서포터즈 분석 ─────────────────────────────────────────────────────────────
+
+def _date_range(start: str, end: str):
+    s = e = None
+    if start:
+        s = int(datetime.strptime(start, "%Y-%m-%d").timestamp() * 1000)
+    if end:
+        e = int((datetime.strptime(end, "%Y-%m-%d").timestamp() + 86400) * 1000) - 1
+    return s, e
+
+
+SUP_REFRESH = {"running": False, "done": 0, "total": 0, "group_id": None}
+
+
+@app.get("/api/supporters/groups")
+def sup_groups():
+    db = _db()
+    try:
+        return db.get_supporter_groups()
+    finally:
+        db.close()
+
+
+@app.post("/api/supporters/groups")
+async def sup_group_add(req: dict):
+    name = (req.get("name") or "").strip()
+    if not name:
+        return JSONResponse({"error": "name required"}, status_code=400)
+    db = _db()
+    try:
+        return {"ok": True, "id": db.create_supporter_group(name)}
+    finally:
+        db.close()
+
+
+@app.delete("/api/supporters/groups/{group_id}")
+def sup_group_del(group_id: int):
+    db = _db()
+    try:
+        db.delete_supporter_group(group_id)
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.get("/api/supporters/{group_id}/members")
+def sup_members(group_id: int):
+    db = _db()
+    try:
+        names = _cafe_names()
+        rows = db.get_supporter_members(group_id)
+        for r in rows:
+            r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
+        return rows
+    finally:
+        db.close()
+
+
+@app.post("/api/supporters/{group_id}/members/bulk")
+async def sup_members_bulk(group_id: int, req: dict):
+    """아이디/닉네임/멤버태그 여러 개를 검색해 그룹원으로 일괄 등록."""
+    ids = [s.strip() for s in (req.get("ids") or []) if s and s.strip()]
+    id_type = int(req.get("id_type", 0))
+    only_cafe = int(req.get("cafe_id", 0))
+    if not ids:
+        return {"ok": True, "registered": 0, "not_found": []}
+    from . import cafe_api
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = SESSION_MGR.load_cookies(account_id) if account_id and SESSION_MGR.verify(account_id).ok else None
+    if not cookies:
+        return JSONResponse({"error": "로그인 세션이 필요합니다"}, status_code=400)
+    client = cafe_api.make_client(cookies)
+    db = _db()
+    registered = 0
+    not_found = []
+    try:
+        for kw in ids:
+            hit = False
+            for c in cfg.get("cafes", []):
+                cid = c["cafe_id"]
+                if only_cafe and cid != only_cafe:
+                    continue
+                try:
+                    members = cafe_api.search_members(cid, kw, id_type=id_type, per_page=10, client=client)
+                except Exception:
+                    members = []
+                for m in members:
+                    db.add_supporter_member(group_id, cid, m.member_key, kw if id_type == 0 else "",
+                                            m.nickname, m.member_tag, m.masked_id)
+                    registered += 1
+                    hit = True
+            if not hit:
+                not_found.append(kw)
+        return {"ok": True, "registered": registered, "not_found": not_found}
+    finally:
+        client.close()
+        db.close()
+
+
+@app.delete("/api/supporters/{group_id}/members/{cafe_id}/{member_key}")
+def sup_member_del(group_id: int, cafe_id: int, member_key: str):
+    db = _db()
+    try:
+        db.remove_supporter_member(group_id, cafe_id, member_key)
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.get("/api/supporters/{group_id}/boards")
+def sup_boards(group_id: int):
+    db = _db()
+    try:
+        return db.get_supporter_boards(group_id)
+    finally:
+        db.close()
+
+
+@app.get("/api/supporters/{group_id}/stats")
+def sup_stats(group_id: int, start: str = "", end: str = "", menu_id: int = -1):
+    try:
+        s, e = _date_range(start, end)
+    except ValueError:
+        return JSONResponse({"error": "날짜 형식 YYYY-MM-DD"}, status_code=400)
+    db = _db()
+    try:
+        names = _cafe_names()
+        rows = db.supporter_stats(group_id, s, e, menu_id if menu_id >= 0 else None)
+        for r in rows:
+            r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
+        return rows
+    finally:
+        db.close()
+
+
+@app.get("/api/supporters/{group_id}/articles")
+def sup_articles(group_id: int, start: str = "", end: str = "", menu_id: int = -1):
+    try:
+        s, e = _date_range(start, end)
+    except ValueError:
+        return JSONResponse({"error": "날짜 형식 YYYY-MM-DD"}, status_code=400)
+    db = _db()
+    try:
+        names = _cafe_names()
+        urls = _cafe_urls()
+        rows = db.supporter_articles(group_id, s, e, menu_id if menu_id >= 0 else None)
+        for r in rows:
+            cid = r["cafe_id"]
+            r["cafe_name"] = names.get(cid, str(cid))
+            r["write_str"] = _fmt(r.get("write_ts"))
+            r["url"] = f"https://cafe.naver.com/ca-fe/cafes/{cid}/articles/{r['article_id']}"
+            r["short_url"] = (f"https://cafe.naver.com/{urls.get(cid,'')}/{r['article_id']}"
+                              if urls.get(cid) else r["url"])
+        return {"rows": rows}
+    finally:
+        db.close()
+
+
+@app.get("/api/supporters/refresh_status")
+def sup_refresh_status():
+    return SUP_REFRESH
+
+
+@app.post("/api/supporters/{group_id}/refresh")
+async def sup_refresh(group_id: int, req: dict = None):
+    """그룹원 게시글을 재크롤해 조회·좋아요·댓글·사진수·글자수를 최신화 (백그라운드)."""
+    if SUP_REFRESH["running"]:
+        return {"ok": False, "message": "이미 갱신 중"}
+    req = req or {}
+    try:
+        s, e = _date_range(req.get("start", ""), req.get("end", ""))
+    except ValueError:
+        return JSONResponse({"error": "날짜 형식 YYYY-MM-DD"}, status_code=400)
+    menu_id = int(req.get("menu_id", -1))
+    threading.Thread(target=_run_sup_refresh, args=(group_id, s, e, menu_id), daemon=True).start()
+    return {"ok": True}
+
+
+def _run_sup_refresh(group_id, s, e, menu_id):
+    from . import cafe_api
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = SESSION_MGR.load_cookies(account_id) if account_id and SESSION_MGR.verify(account_id).ok else None
+    db = Database(DB_PATH)
+    SUP_REFRESH.update(running=True, done=0, total=0, group_id=group_id)
+    try:
+        arts = db.supporter_articles(group_id, s, e, menu_id if menu_id >= 0 else None)
+        SUP_REFRESH["total"] = len(arts)
+        if not cookies:
+            return
+        client = cafe_api.make_client(cookies)
+        try:
+            for a in arts:
+                cid, aid = a["cafe_id"], a["article_id"]
+                try:
+                    body = cafe_api.fetch_article_body(cid, aid, menu_id=a.get("menu_id") or 0, client=client)
+                    db.save_body(body)
+                    comments = cafe_api.fetch_comments(cid, aid, client=client)
+                    db.save_comments(cid, aid, comments, phase="refresh")
+                    db.update_revisit_counts(cid, aid, body.read_count, body.comment_count)
+                except cafe_api.ArticleGoneError:
+                    db.mark_deleted(cid, aid)
+                except Exception:
+                    pass
+                SUP_REFRESH["done"] += 1
+                time.sleep(0.3)
+        finally:
+            client.close()
+    finally:
+        SUP_REFRESH["running"] = False
+        db.close()
+
+
 @app.post("/api/companies/mapping")
 async def add_company_mapping(req: dict):
     naver_id = (req.get("naver_id") or "").strip()
@@ -627,6 +857,54 @@ async def writers_add(req: dict):
         )
         return {"ok": True}
     finally:
+        db.close()
+
+
+@app.post("/api/writers/bulk")
+async def writers_add_bulk(req: dict):
+    """여러 아이디/닉네임/멤버태그를 한 번에 검색해서 일괄 등록.
+    ids: 문자열 리스트. id_type: 0=아이디 1=닉네임 3=멤버태그."""
+    ids = req.get("ids") or []
+    ids = [s.strip() for s in ids if s and s.strip()]
+    id_type = int(req.get("id_type", 0))
+    only_cafe = int(req.get("cafe_id", 0))
+    gid = req.get("group_id")
+    group_id = int(gid) if gid not in (None, "", 0, "0") else None
+    if not ids:
+        return {"ok": True, "registered": 0, "not_found": []}
+    from . import cafe_api
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = SESSION_MGR.load_cookies(account_id) if account_id and SESSION_MGR.verify(account_id).ok else None
+    if not cookies:
+        return JSONResponse({"error": "로그인 세션이 필요합니다"}, status_code=400)
+    client = cafe_api.make_client(cookies)
+    db = _db()
+    registered = 0
+    not_found = []
+    try:
+        for kw in ids:
+            hit = False
+            for c in cfg.get("cafes", []):
+                cid = c["cafe_id"]
+                if only_cafe and cid != only_cafe:
+                    continue
+                try:
+                    members = cafe_api.search_members(cid, kw, id_type=id_type, per_page=10, client=client)
+                except Exception:
+                    members = []
+                for m in members:
+                    db.add_watched_writer(
+                        cid, m.member_key, "", m.nickname, m.masked_id,
+                        m.member_tag, m.level_name, "", group_id=group_id,
+                    )
+                    registered += 1
+                    hit = True
+            if not hit:
+                not_found.append(kw)
+        return {"ok": True, "registered": registered, "not_found": not_found, "total_ids": len(ids)}
+    finally:
+        client.close()
         db.close()
 
 
@@ -716,12 +994,17 @@ def writer_articles(cafe_id: int, member_key: str, limit: int = 200, offset: int
     db = _db()
     try:
         names = _cafe_names()
+        urls = _cafe_urls()
+        cafe_url = urls.get(cafe_id, "")
         rows = db.get_writer_articles(cafe_id, member_key, limit=limit, offset=offset)
         for r in rows:
             r["write_str"] = _fmt(r.get("write_ts"))
             r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
             r["url"] = (f"https://cafe.naver.com/ca-fe/cafes/{r['cafe_id']}"
                         f"/articles/{r['article_id']}")
+            # 짧은 링크 (드래그·복사용): https://cafe.naver.com/{cafe_url}/{article_id}
+            r["short_url"] = (f"https://cafe.naver.com/{cafe_url}/{r['article_id']}"
+                              if cafe_url else r["url"])
         return {"rows": rows, "has_more": len(rows) == limit}
     finally:
         db.close()

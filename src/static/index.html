@@ -41,6 +41,9 @@
   /* 우측 패널 */
   #right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
   #right-tabs { background: #16213e; display: flex; border-bottom: 1px solid #0f3460; flex-shrink: 0; }
+  #supporter-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
+  #supporter-modal.open { display: flex; }
+  #supporter-box { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; width: 1100px; max-width: 96vw; height: 88vh; display: flex; flex-direction: column; }
   #export-modal { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 200; display: none; align-items: center; justify-content: center; }
   #export-modal.open { display: flex; }
   #export-box { background: #16213e; border: 2px solid #0f3460; border-radius: 8px; width: 460px; max-width: 92vw; }
@@ -177,6 +180,7 @@
   <div class="spacer"></div>
   <button class="btn-success" id="btn-watcher-toggle" onclick="toggleWatcher()">▶ 감시 시작</button>
   <button class="btn-secondary" onclick="openCompanyModal()">📊 업체 현황</button>
+  <button class="btn-secondary" onclick="openSupporterModal()">👥 서포터즈 분석</button>
   <button class="btn-secondary" onclick="openWriterModal()">📝 글관리</button>
   <button class="btn-secondary" onclick="openExportModal()">📥 엑셀 내보내기</button>
   <button class="btn-secondary" onclick="openSettings()">⚙ 설정</button>
@@ -242,13 +246,16 @@
 <div id="company-modal">
   <div id="company-box">
     <div id="company-box-header">
-      <span style="font-weight:bold;color:#4ade80">📊 업체 현황</span>
+      <div style="display:flex;gap:14px;align-items:center">
+        <span class="tab company-tab active" data-ctab="stats" onclick="switchCompanyTab('stats')" style="font-weight:bold;color:#4ade80">📊 업체 통계</span>
+        <span class="tab company-tab" data-ctab="ids" onclick="switchCompanyTab('ids')" style="font-weight:bold">🆔 업체 아이디 리스트</span>
+      </div>
       <div style="display:flex;gap:8px;align-items:center">
         <button class="btn-secondary" onclick="openMappingEdit()">매핑 관리</button>
         <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeCompanyModal()">✕</button>
       </div>
     </div>
-    <div style="padding:10px 16px;border-bottom:1px solid #0f3460;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#0d1b2e">
+    <div id="comp-daterow" style="padding:10px 16px;border-bottom:1px solid #0f3460;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#0d1b2e">
       <span style="font-size:12px;color:#93c5fd">작성일 기준</span>
       <input type="date" id="comp-start" class="form-input" style="width:auto;padding:4px 8px">
       <span style="color:#888">~</span>
@@ -258,6 +265,10 @@
       <button class="btn-secondary" onclick="setCompRange(30)">최근30일</button>
       <button class="btn-secondary" onclick="setCompRange(0)">전체</button>
       <span id="comp-range-info" style="font-size:12px;color:#888;margin-left:auto"></span>
+    </div>
+    <div id="comp-idrow" style="display:none;padding:10px 16px;border-bottom:1px solid #0f3460;background:#0d1b2e">
+      <input id="comp-id-search" class="form-input" style="width:260px;padding:4px 8px" placeholder="아이디/닉네임/업체명 검색" oninput="renderCompanyIds()">
+      <span id="comp-id-info" style="font-size:12px;color:#888;margin-left:10px"></span>
     </div>
     <div id="company-box-body">
       <div class="empty-msg">업체 데이터 없음</div>
@@ -284,7 +295,18 @@
       </select>
       <input id="wr-keyword" class="form-input" style="width:200px;padding:4px 8px" placeholder="검색어 입력" onkeydown="if(event.key==='Enter')searchWriter()">
       <button class="btn-success" onclick="searchWriter()">🔍 검색</button>
+      <button class="btn-secondary" onclick="toggleBulkAdd()">📋 여러개 일괄등록</button>
       <span id="wr-search-info" style="font-size:12px;color:#888"></span>
+    </div>
+    <!-- 일괄 등록 영역 -->
+    <div id="wr-bulk-area" style="display:none;padding:10px 16px;border-bottom:1px solid #0f3460;background:#0d1b2e">
+      <div style="font-size:12px;color:#93c5fd;margin-bottom:6px">여러 아이디를 <b>줄바꿈</b>으로 붙여넣고 [일괄등록]을 누르세요 (위의 대상/카페 설정 적용)</div>
+      <textarea id="wr-bulk-ids" class="form-input" style="width:100%;height:110px;padding:6px 8px;resize:vertical;font-family:monospace" placeholder="improve2043&#10;devote1344&#10;blend13931&#10;..."></textarea>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:6px">
+        <button class="btn-success" onclick="bulkAddWriters()">✅ 일괄등록</button>
+        <button class="btn-secondary" onclick="toggleBulkAdd()">닫기</button>
+        <span id="wr-bulk-info" style="font-size:12px;color:#888"></span>
+      </div>
     </div>
     <div id="wr-search-result" style="padding:0 16px"></div>
     <!-- 본문: 좌 등록목록 / 우 게시글 -->
@@ -302,6 +324,52 @@
         <div id="wr-articles"><div class="empty-msg">왼쪽에서 작성자를 선택하세요</div></div>
       </div>
     </div>
+  </div>
+</div>
+
+<!-- 서포터즈 분석 모달 -->
+<div id="supporter-modal">
+  <div id="supporter-box">
+    <div style="padding:12px 16px;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-weight:bold;color:#93c5fd">👥 서포터즈 활동 분석</span>
+      <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeSupporterModal()">✕</button>
+    </div>
+    <!-- 그룹 선택/관리 -->
+    <div style="padding:10px 16px;border-bottom:1px solid #0f3460;display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0d1b2e">
+      <span style="font-size:12px;color:#93c5fd">그룹</span>
+      <select id="sup-group" class="form-input" style="width:auto;padding:4px 8px" onchange="onSupGroupChange()"></select>
+      <button class="btn-secondary" onclick="createSupGroup()">+ 새 그룹</button>
+      <button class="btn-secondary" onclick="delSupGroup()">그룹 삭제</button>
+      <button class="btn-secondary" onclick="toggleSupMembers()">👤 그룹원 관리</button>
+      <div style="flex:1"></div>
+      <span style="font-size:12px;color:#93c5fd">기간</span>
+      <input type="date" id="sup-start" class="form-input" style="width:auto;padding:4px 8px">
+      <span style="color:#888">~</span>
+      <input type="date" id="sup-end" class="form-input" style="width:auto;padding:4px 8px">
+      <button class="btn-secondary" onclick="setSupRange('lastmonth')">지난달</button>
+      <button class="btn-secondary" onclick="setSupRange('thismonth')">이번달</button>
+      <select id="sup-board" class="form-input" style="width:auto;padding:4px 8px"><option value="-1">전체 게시판</option></select>
+      <button class="btn-success" onclick="loadSupStats()">🔍 조회</button>
+      <button class="btn-primary" onclick="refreshSupporter()">🔄 최신값 갱신</button>
+    </div>
+    <!-- 그룹원 관리 영역 -->
+    <div id="sup-members-area" style="display:none;padding:10px 16px;border-bottom:1px solid #0f3460;background:#0d1b2e">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <select id="sup-idtype" class="form-input" style="width:auto;padding:4px 8px">
+          <option value="0">아이디</option><option value="1">닉네임</option><option value="3">멤버코드</option>
+        </select>
+        <select id="sup-cafe" class="form-input" style="width:auto;padding:4px 8px"><option value="0">전체 카페</option></select>
+        <button class="btn-secondary" onclick="document.getElementById('sup-bulk').style.display = document.getElementById('sup-bulk').style.display==='none'?'block':'none'">📋 여러개 일괄등록</button>
+        <span id="sup-member-info" style="font-size:12px;color:#888"></span>
+      </div>
+      <div id="sup-bulk" style="display:none;margin-bottom:6px">
+        <textarea id="sup-bulk-ids" class="form-input" style="width:100%;height:90px;padding:6px;font-family:monospace" placeholder="아이디를 줄바꿈으로 입력&#10;improve2043&#10;devote1344"></textarea>
+        <button class="btn-success" style="margin-top:4px" onclick="bulkAddSupMembers()">✅ 일괄등록</button>
+      </div>
+      <div id="sup-member-list" style="max-height:150px;overflow-y:auto"></div>
+    </div>
+    <div id="sup-refresh-bar" style="display:none;padding:6px 16px;background:#1a1a00;color:#fcd34d;font-size:12px"></div>
+    <div id="supporter-box-body" style="flex:1;overflow-y:auto;padding:12px"><div class="empty-msg">그룹을 선택하거나 만들어 그룹원을 등록하세요</div></div>
   </div>
 </div>
 
@@ -878,10 +946,239 @@ function closeDetail() {
   document.getElementById('detail-panel').classList.remove('open');
 }
 
+// ── 서포터즈 분석 ─────────────────────────────────────────────────────────────
+let supGroups = [];
+
+async function openSupporterModal() {
+  document.getElementById('supporter-modal').classList.add('open');
+  // 카페 드롭다운
+  const s = await fetch('/api/stats').then(r=>r.json());
+  document.getElementById('sup-cafe').innerHTML = '<option value="0">전체 카페</option>' +
+    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
+  setSupRange('lastmonth');
+  await loadSupGroups();
+}
+function closeSupporterModal() { document.getElementById('supporter-modal').classList.remove('open'); }
+
+function setSupRange(which) {
+  const now = new Date();
+  let start, end;
+  if (which === 'lastmonth') {
+    start = new Date(now.getFullYear(), now.getMonth()-1, 1);
+    end = new Date(now.getFullYear(), now.getMonth(), 0);
+  } else { // thismonth
+    start = new Date(now.getFullYear(), now.getMonth(), 1);
+    end = now;
+  }
+  const fmt = d => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  document.getElementById('sup-start').value = fmt(start);
+  document.getElementById('sup-end').value = fmt(end);
+}
+
+async function loadSupGroups() {
+  supGroups = await fetch('/api/supporters/groups').then(r=>r.json());
+  const sel = document.getElementById('sup-group');
+  const cur = sel.value;
+  sel.innerHTML = supGroups.map(g=>`<option value="${g.id}">${esc(g.name)} (${g.member_count}명)</option>`).join('')
+    || '<option value="">그룹 없음</option>';
+  if (cur && [...sel.options].some(o=>o.value===cur)) sel.value = cur;
+  onSupGroupChange();
+}
+function curSupGroup() { return parseInt(document.getElementById('sup-group').value) || 0; }
+
+async function createSupGroup() {
+  const name = prompt('새 그룹 이름:');
+  if (!name) return;
+  const d = await fetch('/api/supporters/groups', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})}).then(r=>r.json());
+  await loadSupGroups();
+  document.getElementById('sup-group').value = d.id;
+  onSupGroupChange();
+  document.getElementById('sup-members-area').style.display='block';
+}
+async function delSupGroup() {
+  const gid = curSupGroup(); if (!gid) return;
+  if (!confirm('이 그룹을 삭제할까요?')) return;
+  await fetch(`/api/supporters/groups/${gid}`, {method:'DELETE'});
+  loadSupGroups();
+}
+function toggleSupMembers() {
+  const el = document.getElementById('sup-members-area');
+  el.style.display = el.style.display==='none'?'block':'none';
+  if (el.style.display==='block') loadSupMembers();
+}
+async function onSupGroupChange() {
+  const gid = curSupGroup();
+  if (!gid) { document.getElementById('supporter-box-body').innerHTML='<div class="empty-msg">그룹을 만들어 그룹원을 등록하세요</div>'; return; }
+  // 게시판 드롭다운
+  const boards = await fetch(`/api/supporters/${gid}/boards`).then(r=>r.json());
+  document.getElementById('sup-board').innerHTML = '<option value="-1">전체 게시판</option>' +
+    boards.map(b=>`<option value="${b.menu_id}">${esc(b.menu_name)} (${b.cnt})</option>`).join('');
+  if (document.getElementById('sup-members-area').style.display!=='none') loadSupMembers();
+  loadSupStats();
+}
+
+async function loadSupMembers() {
+  const gid = curSupGroup(); if (!gid) return;
+  const rows = await fetch(`/api/supporters/${gid}/members`).then(r=>r.json());
+  document.getElementById('sup-member-info').textContent = `${rows.length}명`;
+  const el = document.getElementById('sup-member-list');
+  el.innerHTML = rows.map(m=>`
+    <span style="display:inline-flex;align-items:center;gap:4px;background:#0d1b2e;border-radius:4px;padding:3px 8px;margin:2px;font-size:12px">
+      <b>${esc(m.nickname||m.masked_id||'')}</b>
+      <span class="tag-badge">#${esc(m.member_tag||'')}</span>
+      <span style="color:#4a6fa5;font-size:11px">[${esc(m.cafe_name)}]</span>
+      <span onclick='delSupMember(${gid},${m.cafe_id},"${esc(m.member_key)}")' style="color:#fca5a5;cursor:pointer">✕</span>
+    </span>`).join('') || '<span style="color:#555;font-size:12px">등록된 그룹원 없음 — 위에서 아이디를 검색/일괄등록하세요</span>';
+}
+async function delSupMember(gid, cafe_id, mk) {
+  await fetch(`/api/supporters/${gid}/members/${cafe_id}/${encodeURIComponent(mk)}`, {method:'DELETE'});
+  loadSupMembers(); loadSupGroups();
+}
+async function bulkAddSupMembers() {
+  const gid = curSupGroup(); if (!gid) { showToast('먼저 그룹을 선택/생성하세요'); return; }
+  const ids = document.getElementById('sup-bulk-ids').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+  const id_type = parseInt(document.getElementById('sup-idtype').value);
+  const cafe_id = parseInt(document.getElementById('sup-cafe').value);
+  if (!ids.length) { showToast('아이디를 입력하세요'); return; }
+  document.getElementById('sup-member-info').textContent = `${ids.length}개 등록 중...`;
+  const d = await fetch(`/api/supporters/${gid}/members/bulk`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids,id_type,cafe_id})}).then(r=>r.json());
+  if (d.error) { showToast('오류: '+d.error); return; }
+  showToast(`${d.registered}건 등록` + ((d.not_found||[]).length?` (미발견 ${d.not_found.length})`:''));
+  document.getElementById('sup-bulk-ids').value='';
+  loadSupMembers(); loadSupGroups(); onSupGroupChange();
+}
+
+function supQS() {
+  const start = document.getElementById('sup-start').value;
+  const end = document.getElementById('sup-end').value;
+  const menu_id = document.getElementById('sup-board').value;
+  const qs = new URLSearchParams();
+  if (start) qs.set('start', start);
+  if (end) qs.set('end', end);
+  if (menu_id !== '-1') qs.set('menu_id', menu_id);
+  return qs.toString();
+}
+
+async function loadSupStats() {
+  const gid = curSupGroup(); if (!gid) return;
+  const body = document.getElementById('supporter-box-body');
+  body.innerHTML = '<div class="empty-msg">불러오는 중...</div>';
+  const stats = await fetch(`/api/supporters/${gid}/stats?`+supQS()).then(r=>r.json());
+  const arts = await fetch(`/api/supporters/${gid}/articles?`+supQS()).then(r=>r.json());
+  const rows = arts.rows || [];
+  // 합계
+  const sum = stats.reduce((a,r)=>({p:a.p+r.article_count,rd:a.rd+r.total_read,lk:a.lk+r.total_like,cm:a.cm+r.comment_count}),{p:0,rd:0,lk:0,cm:0});
+  body.innerHTML = `
+    <div class="section-title" style="margin:0 -12px 8px">📊 그룹원별 통계 (선택 기간·게시판 기준)</div>
+    <table class="data-table">
+      <thead><tr><th>서포터즈</th><th>아이디</th><th>카페</th><th>게시글수</th><th>총조회</th><th>평균조회</th><th>좋아요</th><th>댓글수</th></tr></thead>
+      <tbody>${stats.map(r=>`<tr>
+        <td style="color:#93c5fd">${esc(r.nickname)} <span class="tag-badge">#${esc(r.member_tag||'')}</span></td>
+        <td style="user-select:all">${esc(r.naver_id||'')}</td>
+        <td style="color:#4a6fa5;font-size:11px">${esc(r.cafe_name)}</td>
+        <td style="text-align:right;font-weight:bold">${fmtNum(r.article_count)}</td>
+        <td style="text-align:right">${fmtNum(r.total_read)}</td>
+        <td style="text-align:right">${fmtNum(r.avg_read)}</td>
+        <td style="text-align:right">${fmtNum(r.total_like)}</td>
+        <td style="text-align:right">${fmtNum(r.comment_count)}</td>
+      </tr>`).join('')}
+      <tr style="border-top:2px solid #0f3460;font-weight:bold;color:#4ade80">
+        <td colspan="3">합계 (${stats.length}명)</td>
+        <td style="text-align:right">${fmtNum(sum.p)}</td><td style="text-align:right">${fmtNum(sum.rd)}</td>
+        <td style="text-align:right">-</td><td style="text-align:right">${fmtNum(sum.lk)}</td><td style="text-align:right">${fmtNum(sum.cm)}</td>
+      </tr></tbody>
+    </table>
+    <div class="section-title" style="margin:16px -12px 8px">📝 작성 게시글 목록 (${rows.length}건)</div>
+    <table class="data-table">
+      <thead><tr><th>상태</th><th>작성일</th><th>게시판</th><th>작성자</th><th>제목</th><th>조회</th><th>댓글</th><th>♥</th><th>사진</th><th>글자수</th><th>링크</th></tr></thead>
+      <tbody>${rows.map(a=>{
+        const st = statusBadge(a);
+        return `<tr>
+          <td>${st}</td>
+          <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
+          <td style="color:#6ee7b7">${esc(a.menu_name||'')}</td>
+          <td style="color:#93c5fd">${esc(a.writer_nickname||'')}</td>
+          <td>${esc(a.current_title||a.title||'')}</td>
+          <td style="text-align:right">${fmtNum(a.cur_read)}</td>
+          <td style="text-align:right">${fmtNum(a.cur_comment)}</td>
+          <td style="text-align:right">${fmtNum(a.cur_like)}</td>
+          <td style="text-align:right">${a.image_count!=null?a.image_count:'-'}</td>
+          <td style="text-align:right">${a.content_len!=null?fmtNum(a.content_len):'-'}</td>
+          <td style="white-space:nowrap"><a href="${a.url}" target="_blank" style="color:#4ade80;text-decoration:none">↗</a> <span style="color:#7fa8d0;font-size:11px;user-select:all">${esc(a.short_url||a.url)}</span></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>`;
+}
+
+async function refreshSupporter() {
+  const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
+  if (!confirm('그룹원 게시글을 재크롤해 조회·좋아요·댓글·사진수를 최신화합니다. 게시글이 많으면 시간이 걸립니다. 진행할까요?')) return;
+  const start = document.getElementById('sup-start').value, end = document.getElementById('sup-end').value;
+  const menu_id = document.getElementById('sup-board').value;
+  const r = await fetch(`/api/supporters/${gid}/refresh`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start,end,menu_id})}).then(r=>r.json());
+  if (!r.ok) { showToast(r.message||r.error||'오류'); return; }
+  const bar = document.getElementById('sup-refresh-bar');
+  bar.style.display='block';
+  const poll = setInterval(async ()=>{
+    const s = await fetch('/api/supporters/refresh_status').then(r=>r.json());
+    bar.textContent = `🔄 최신값 갱신 중... ${s.done}/${s.total}`;
+    if (!s.running) { clearInterval(poll); bar.textContent=`✅ 갱신 완료 (${s.done}건)`; setTimeout(()=>bar.style.display='none',4000); loadSupStats(); }
+  }, 1500);
+}
+
 // ── 업체 현황 ─────────────────────────────────────────────────────────────────
+let companyIdRows = [];
+
 function openCompanyModal() {
   document.getElementById('company-modal').classList.add('open');
-  loadCompanyStats();
+  switchCompanyTab('stats');
+}
+
+function switchCompanyTab(tab) {
+  document.querySelectorAll('.company-tab').forEach(t => {
+    const on = t.dataset.ctab === tab;
+    t.classList.toggle('active', on);
+    t.style.color = on ? (tab==='stats'?'#4ade80':'#93c5fd') : '#888';
+  });
+  document.getElementById('comp-daterow').style.display = tab==='stats' ? 'flex' : 'none';
+  document.getElementById('comp-idrow').style.display = tab==='ids' ? 'block' : 'none';
+  if (tab === 'stats') loadCompanyStats();
+  else loadCompanyIds();
+}
+
+async function loadCompanyIds() {
+  const body = document.getElementById('company-box-body');
+  body.innerHTML = '<div class="empty-msg">불러오는 중...</div>';
+  companyIdRows = await fetch('/api/companies/members').then(r=>r.json());
+  renderCompanyIds();
+}
+
+function renderCompanyIds() {
+  const q = (document.getElementById('comp-id-search').value||'').toLowerCase().trim();
+  let rows = companyIdRows;
+  if (q) rows = rows.filter(r =>
+    (r.naver_id||'').toLowerCase().includes(q) ||
+    (r.nickname||'').toLowerCase().includes(q) ||
+    (r.member_tag||'').toLowerCase().includes(q) ||
+    (r.company_name||'').toLowerCase().includes(q));
+  document.getElementById('comp-id-info').textContent = `${rows.length}개 아이디`;
+  const body = document.getElementById('company-box-body');
+  if (!rows.length) { body.innerHTML = '<div class="empty-msg">해석된 업체 아이디가 없습니다<br><small style="color:#555">구글시트 동기화·회원해석이 진행되면 채워집니다</small></div>'; return; }
+  body.innerHTML = `
+    <table class="data-table">
+      <thead><tr>
+        <th>아이디</th><th>멤버태그</th><th>닉네임(최근)</th><th>업체명</th><th>카페</th><th>글수</th><th>라스트(최근작성)</th>
+      </tr></thead>
+      <tbody>${rows.map(r=>`<tr>
+        <td style="user-select:all">${esc(r.naver_id||'')}</td>
+        <td><span class="tag-badge" style="user-select:all">#${esc(r.member_tag||'')}</span></td>
+        <td style="color:#93c5fd">${esc(r.nickname||'')}</td>
+        <td><span class="company-badge">${esc(r.company_name||'')}</span></td>
+        <td style="color:#4a6fa5;font-size:11px">${esc(r.cafe_name||'')}</td>
+        <td style="text-align:right">${fmtNum(r.article_count)}</td>
+        <td style="color:#888;white-space:nowrap">${r.last_write_str||'-'}</td>
+      </tr>`).join('')}</tbody>
+    </table>`;
 }
 
 function setCompRange(days) {
@@ -1072,6 +1369,31 @@ function doExport() {
   showToast('다운로드를 시작합니다...');
 }
 
+function toggleBulkAdd() {
+  const el = document.getElementById('wr-bulk-area');
+  el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function bulkAddWriters() {
+  const raw = document.getElementById('wr-bulk-ids').value;
+  const ids = raw.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
+  const id_type = parseInt(document.getElementById('wr-idtype').value);
+  const cafe_id = parseInt(document.getElementById('wr-cafe').value);
+  const info = document.getElementById('wr-bulk-info');
+  if (!ids.length) { showToast('아이디를 입력하세요'); return; }
+  info.textContent = `${ids.length}개 등록 중... (검색 시간이 걸릴 수 있습니다)`;
+  const r = await fetch('/api/writers/bulk', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ids, id_type, cafe_id}),
+  });
+  const d = await r.json();
+  if (d.error) { info.textContent = ''; showToast('오류: '+d.error); return; }
+  const nf = (d.not_found||[]).length;
+  info.innerHTML = `✅ ${d.registered}건 등록` + (nf?` · <span style="color:#fca5a5">미발견 ${nf}개: ${esc((d.not_found||[]).join(', ').slice(0,80))}</span>`:'');
+  showToast(`${d.registered}건 등록 완료` + (nf?` (미발견 ${nf})`:''));
+  loadWriterList();
+}
+
 async function searchWriter() {
   const keyword = document.getElementById('wr-keyword').value.trim();
   const id_type = parseInt(document.getElementById('wr-idtype').value);
@@ -1215,6 +1537,7 @@ async function renderWriterArticles(w) {
         const st = statusBadge(a);
         const titleChg = (a.title_changed && a.title!==a.current_title)
           ? `<div style="font-size:11px;color:#fcd34d">↳ "${esc(a.title)}" → "${esc(a.current_title)}"</div>` : '';
+        const short = a.short_url || a.url;
         return `<tr>
           <td>${st}</td>
           <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
@@ -1223,7 +1546,10 @@ async function renderWriterArticles(w) {
           <td style="text-align:right">${fmtNum(a.cur_read)}</td>
           <td style="text-align:right">${fmtNum(a.cur_comment)}</td>
           <td style="text-align:right">${fmtNum(a.cur_like)}</td>
-          <td><a href="${a.url}" target="_blank" style="color:#4ade80">↗</a></td>
+          <td style="white-space:nowrap">
+            <a href="${a.url}" target="_blank" style="color:#4ade80;text-decoration:none">↗</a>
+            <span style="color:#7fa8d0;font-size:11px;user-select:all;cursor:text">${esc(short)}</span>
+          </td>
         </tr>`;
       }).join('')}</tbody>
     </table>`;

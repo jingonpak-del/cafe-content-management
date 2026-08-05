@@ -1,6 +1,7 @@
 """SQLite persistence — 카페 게시글 감시 시스템."""
 from __future__ import annotations
 
+import hashlib
 import re
 import sqlite3
 import time
@@ -8,11 +9,26 @@ from pathlib import Path
 
 
 def normalize_title(title: str) -> str:
-    """중복 판정용 제목 정규화: 공백·특수문자 제거, 소문자.
-    '★이벤트★' 와 '이벤트 !!' 를 같은 것으로 취급."""
+    """제목 정규화: 공백·특수문자 제거, 소문자."""
     if not title:
         return ""
     return re.sub(r"[^\w가-힣]", "", title).lower()
+
+
+# 중복(도배) 판정 대상이 되려면 본문이 이 길이(정규화 후) 이상이어야 함.
+# 짧은 인사글("굿모닝" 등)이 우연히 같아도 도배로 오탐하지 않도록 하는 하한.
+DUP_MIN_CONTENT_LEN = 30
+
+
+def content_hash(content_text: str) -> str | None:
+    """중복 판정용 본문 해시. 공백·특수문자 제거 후 정규화.
+    본문이 너무 짧으면(도배 판정 부적합) None."""
+    if not content_text:
+        return None
+    norm = re.sub(r"[^\w가-힣]", "", content_text).lower()
+    if len(norm) < DUP_MIN_CONTENT_LEN:
+        return None
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:32]
 
 # 재방문 체크포인트 (초 단위). H=시간.
 # 일반글: 10일까지 6회. 업체글: 30일까지 12회(더 촘촘 + 연장).
@@ -160,6 +176,26 @@ CREATE TABLE IF NOT EXISTS writer_group (
     created_at  INTEGER
 );
 
+-- 서포터즈 분석: 그룹
+CREATE TABLE IF NOT EXISTS supporter_group (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    created_at  INTEGER
+);
+
+-- 서포터즈 분석: 그룹원 (카페별 member_key 단위)
+CREATE TABLE IF NOT EXISTS supporter_member (
+    group_id    INTEGER NOT NULL,
+    cafe_id     INTEGER NOT NULL,
+    member_key  TEXT NOT NULL,
+    naver_id    TEXT,
+    nickname    TEXT,
+    member_tag  TEXT,
+    masked_id   TEXT,
+    added_at    INTEGER,
+    PRIMARY KEY (group_id, cafe_id, member_key)
+);
+
 -- 글관리: 게시글을 추적할 등록 작성자 (카페별 member_key 단위)
 CREATE TABLE IF NOT EXISTS watched_writer (
     cafe_id      INTEGER NOT NULL,
@@ -232,13 +268,14 @@ class Database:
                           ("reviewed", "INTEGER DEFAULT 0"), ("reviewed_at", "INTEGER"),
                           ("deleted_at", "INTEGER"), ("flag_ts", "INTEGER"),
                           ("norm_title", "TEXT"), ("is_duplicate", "INTEGER DEFAULT 0"),
-                          ("dup_count", "INTEGER DEFAULT 0"),
+                          ("dup_count", "INTEGER DEFAULT 0"), ("content_hash", "TEXT"),
                           ("delete_type", "TEXT"),          # staff | self | NULL(미정)
                           ("deleted_by_nick", "TEXT"), ("deleted_by_tag", "TEXT"),
-                          ("deleted_by_id", "TEXT")):
+                          ("deleted_by_id", "TEXT"),
+                          ("image_count", "INTEGER"), ("content_len", "INTEGER")):
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {decl}")
-        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dup ON articles (cafe_id, member_key, norm_title)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dup ON articles (cafe_id, member_key, content_hash)")
         # 작성자 그룹: 기존 watched_writer 에 group_id 추가
         ww_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(watched_writer)")}
         if "group_id" not in ww_cols:
@@ -283,53 +320,59 @@ class Database:
         is_new = cur.rowcount > 0
         if is_new:
             self._schedule_revisits(a.cafe_id, a.article_id, ts)
-            self._mark_duplicates(a.cafe_id, a.member_key, norm)
+            # 중복 판정은 본문 기준 → 본문 확보 시점(save_body)에 수행.
         self.conn.commit()
         return is_new
 
     def backfill_duplicates(self) -> dict:
-        """기존 전체 데이터에 norm_title 채우고 중복글 일괄 판정."""
-        # 1) norm_title 비어있는 것 채우기
+        """본문(content_text) 해시 기반으로 중복글 일괄 재판정.
+        본문이 실제로 동일한 복붙 도배만 잡는다 (제목만 같은 정상 반복글 제외)."""
+        # 1) content_hash 비어있는데 본문 있는 것 채우기
         rows = self.conn.execute(
-            "SELECT cafe_id, article_id, title FROM articles WHERE norm_title IS NULL OR norm_title=''"
+            "SELECT cafe_id, article_id, content_text FROM articles "
+            "WHERE (content_hash IS NULL) AND content_text IS NOT NULL AND content_text!=''"
         ).fetchall()
+        filled = 0
         for r in rows:
-            self.conn.execute(
-                "UPDATE articles SET norm_title=? WHERE cafe_id=? AND article_id=?",
-                (normalize_title(r["title"]), r["cafe_id"], r["article_id"]),
-            )
+            ch = content_hash(r["content_text"])
+            if ch:
+                self.conn.execute(
+                    "UPDATE articles SET content_hash=? WHERE cafe_id=? AND article_id=?",
+                    (ch, r["cafe_id"], r["article_id"]),
+                )
+                filled += 1
         self.conn.commit()
-        # 2) 초기화 후 중복 그룹(같은 cafe+member+norm_title 2개 이상) 판정
+        # 2) 초기화 후 본문 해시 그룹(같은 cafe+member+content_hash 2개 이상) 판정
         self.conn.execute("UPDATE articles SET is_duplicate=0, dup_count=0")
         self.conn.execute(
             """UPDATE articles SET is_duplicate=1, dup_count=(
                    SELECT COUNT(*) FROM articles b
                    WHERE b.cafe_id=articles.cafe_id AND b.member_key=articles.member_key
-                     AND b.norm_title=articles.norm_title)
-               WHERE member_key!='' AND norm_title!='' AND (
+                     AND b.content_hash=articles.content_hash)
+               WHERE member_key!='' AND content_hash IS NOT NULL AND (
                    SELECT COUNT(*) FROM articles b
                    WHERE b.cafe_id=articles.cafe_id AND b.member_key=articles.member_key
-                     AND b.norm_title=articles.norm_title) >= 2"""
+                     AND b.content_hash=articles.content_hash) >= 2"""
         )
         self.conn.commit()
         dup = self.conn.execute("SELECT COUNT(*) FROM articles WHERE is_duplicate=1").fetchone()[0]
-        return {"norm_filled": len(rows), "duplicates": dup}
+        return {"hash_filled": filled, "duplicates": dup}
 
-    def _mark_duplicates(self, cafe_id: int, member_key: str, norm_title: str):
-        """같은 작성자가 같은(정규화) 제목을 2개 이상 → 그 그룹 전부 중복 표시."""
-        if not member_key or not norm_title:
+    def _mark_duplicates(self, cafe_id: int, member_key: str, chash: str):
+        """같은 작성자가 같은 본문(해시)을 2개 이상 → 그 그룹 전부 중복 표시.
+        본문 내용이 실제로 동일한 복붙 도배만 잡는다 (제목만 같은 정상 반복글 제외)."""
+        if not member_key or not chash:
             return
-        ids = [r[0] for r in self.conn.execute(
-            "SELECT article_id FROM articles WHERE cafe_id=? AND member_key=? AND norm_title=?",
-            (cafe_id, member_key, norm_title),
-        ).fetchall()]
-        n = len(ids)
+        n = self.conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE cafe_id=? AND member_key=? AND content_hash=?",
+            (cafe_id, member_key, chash),
+        ).fetchone()[0]
         if n >= 2:
             self.conn.execute(
-                f"""UPDATE articles SET is_duplicate=1, dup_count=?,
-                    flag_ts=COALESCE(flag_ts, ?)
-                    WHERE cafe_id=? AND member_key=? AND norm_title=?""",
-                (n, now_ms(), cafe_id, member_key, norm_title),
+                """UPDATE articles SET is_duplicate=1, dup_count=?,
+                   flag_ts=COALESCE(flag_ts, ?)
+                   WHERE cafe_id=? AND member_key=? AND content_hash=?""",
+                (n, now_ms(), cafe_id, member_key, chash),
             )
 
     def upsert_body_as_article(self, cafe_id: int, article_id: int, body) -> bool:
@@ -337,19 +380,20 @@ class Database:
         목록 메타가 없으므로 본문에서 얻은 정보로 저장. 이미 있으면 False."""
         ts = now_ms()
         norm = normalize_title(body.title)
+        chash = content_hash(body.content_text)
         cur = self.conn.execute(
             """INSERT OR IGNORE INTO articles
                (cafe_id, article_id, menu_id, title, current_title,
                 writer_nickname, member_key, write_ts, first_seen_at,
-                cur_read, cur_comment, content_text, body_crawled, norm_title)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                cur_read, cur_comment, content_text, body_crawled, norm_title, content_hash)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
             (cafe_id, article_id, body.menu_id, body.title, body.title,
              body.writer_nickname, body.member_key, body.write_ts, ts,
-             body.read_count, body.comment_count, body.content_text, norm),
+             body.read_count, body.comment_count, body.content_text, norm, chash),
         )
         is_new = cur.rowcount > 0
-        if is_new:
-            self._mark_duplicates(cafe_id, body.member_key, norm)
+        if is_new and chash and body.member_key:
+            self._mark_duplicates(cafe_id, body.member_key, chash)
         self.conn.commit()
         return is_new
 
@@ -425,14 +469,27 @@ class Database:
         return new
 
     def save_body(self, body):
-        # content_html은 저장하지 않는다 (content_text로 충분, DB 용량 폭증 방지).
+        # content_html은 저장하지 않지만(용량), 사진 수(img 태그)와 글자 수는 여기서 계산해 저장.
+        chash = content_hash(body.content_text)
+        img_count = len(re.findall(r"<img\b", body.content_html or "", re.I))
+        clen = len(body.content_text or "")
         self.conn.execute(
-            """UPDATE articles SET content_text=?, body_crawled=1,
+            """UPDATE articles SET content_text=?, body_crawled=1, content_hash=?,
+               image_count=?, content_len=?,
                menu_id=COALESCE(NULLIF(menu_id,0), ?)
                WHERE cafe_id=? AND article_id=?""",
-            (body.content_text, body.menu_id, body.cafe_id, body.article_id),
+            (body.content_text, chash, img_count, clen, body.menu_id,
+             body.cafe_id, body.article_id),
         )
         self.conn.commit()
+        # 본문 확보 → 같은 작성자·같은 본문(복붙) 중복 판정
+        if chash:
+            mk = self.conn.execute(
+                "SELECT member_key FROM articles WHERE cafe_id=? AND article_id=?",
+                (body.cafe_id, body.article_id),
+            ).fetchone()
+            if mk and mk["member_key"]:
+                self._mark_duplicates(body.cafe_id, mk["member_key"], chash)
 
     def update_revisit_counts(self, cafe_id: int, article_id: int,
                               read_count: int, comment_count: int) -> int:
@@ -1021,6 +1078,13 @@ class Database:
         else:
             where.append("(a.title_changed=1 OR a.status='deleted' OR a.has_keyword_hit=1 OR a.is_duplicate=1)")
 
+        # 중복(도배)글은 같은 그룹(작성자+본문)에서 '가장 최근 1개'만 노출.
+        # (같은 도배가 리스트에 수십 개씩 뜨는 것 방지, dup_count로 반복 횟수는 표시)
+        where.append("""(a.is_duplicate=0 OR a.write_ts = (
+            SELECT MAX(b.write_ts) FROM articles b
+            WHERE b.cafe_id=a.cafe_id AND b.member_key=a.member_key
+              AND b.content_hash=a.content_hash))""")
+
         sql = f"""SELECT a.*,
                         GROUP_CONCAT(DISTINCT h.keyword_text) AS hit_keywords
                   FROM articles a
@@ -1118,6 +1182,135 @@ class Database:
             (cafe_id, article_id),
         ).fetchall()]
         return d
+
+    def get_company_member_list(self) -> list:
+        """업체 아이디 리스트: 구글시트 연동 아이디별 (아이디·멤버태그·최근닉네임·마지막작성일).
+        닉네임은 실제 게시글의 최신 닉네임(없으면 해석 시점 닉네임)."""
+        return [dict(r) for r in self.conn.execute(
+            """SELECT cm.naver_id, cm.cafe_id, cm.member_tag, cm.company_name,
+                      cm.nickname AS resolved_nick, cm.level_name, cm.masked_id,
+                      (SELECT a.writer_nickname FROM articles a
+                       WHERE a.cafe_id=cm.cafe_id AND a.member_key=cm.member_key
+                       ORDER BY a.write_ts DESC LIMIT 1) AS last_nick,
+                      (SELECT MAX(a.write_ts) FROM articles a
+                       WHERE a.cafe_id=cm.cafe_id AND a.member_key=cm.member_key) AS last_write_ts,
+                      (SELECT COUNT(*) FROM articles a
+                       WHERE a.cafe_id=cm.cafe_id AND a.member_key=cm.member_key) AS article_count
+               FROM company_member cm
+               WHERE cm.status='resolved' AND cm.member_key IS NOT NULL AND cm.member_key!=''
+               ORDER BY last_write_ts DESC NULLS LAST, cm.company_name"""
+        ).fetchall()]
+
+    # ── 서포터즈 분석 ─────────────────────────────────────────────────────
+
+    def create_supporter_group(self, name: str) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO supporter_group (name, created_at) VALUES (?,?)", (name, now_ms()))
+        self.conn.commit()
+        return cur.lastrowid
+
+    def delete_supporter_group(self, group_id: int):
+        self.conn.execute("DELETE FROM supporter_group WHERE id=?", (group_id,))
+        self.conn.execute("DELETE FROM supporter_member WHERE group_id=?", (group_id,))
+        self.conn.commit()
+
+    def get_supporter_groups(self) -> list:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT g.*, (SELECT COUNT(*) FROM supporter_member m WHERE m.group_id=g.id) AS member_count
+               FROM supporter_group g ORDER BY g.created_at""").fetchall()]
+
+    def add_supporter_member(self, group_id: int, cafe_id: int, member_key: str,
+                             naver_id: str, nickname: str, member_tag: str, masked_id: str):
+        self.conn.execute(
+            """INSERT INTO supporter_member
+               (group_id, cafe_id, member_key, naver_id, nickname, member_tag, masked_id, added_at)
+               VALUES (?,?,?,?,?,?,?,?)
+               ON CONFLICT(group_id, cafe_id, member_key) DO UPDATE SET
+                 nickname=excluded.nickname, member_tag=excluded.member_tag""",
+            (group_id, cafe_id, member_key, naver_id, nickname, member_tag, masked_id, now_ms()))
+        self.conn.commit()
+
+    def remove_supporter_member(self, group_id: int, cafe_id: int, member_key: str):
+        self.conn.execute(
+            "DELETE FROM supporter_member WHERE group_id=? AND cafe_id=? AND member_key=?",
+            (group_id, cafe_id, member_key))
+        self.conn.commit()
+
+    def get_supporter_members(self, group_id: int) -> list:
+        return [dict(r) for r in self.conn.execute(
+            "SELECT * FROM supporter_member WHERE group_id=? ORDER BY added_at", (group_id,)).fetchall()]
+
+    def supporter_stats(self, group_id: int, start_ms: int | None, end_ms: int | None,
+                        menu_id: int | None = None) -> list:
+        """그룹원별 기간 통계: 게시글수·총조회·평균조회·좋아요·댓글수(+게시판필터)."""
+        members = self.get_supporter_members(group_id)
+        out = []
+        for m in members:
+            cid, mk = m["cafe_id"], m["member_key"]
+            aw, ap = ["cafe_id=?", "member_key=?"], [cid, mk]
+            if start_ms is not None: aw.append("write_ts>=?"); ap.append(start_ms)
+            if end_ms is not None: aw.append("write_ts<=?"); ap.append(end_ms)
+            if menu_id is not None: aw.append("menu_id=?"); ap.append(menu_id)
+            art = self.conn.execute(
+                f"""SELECT COUNT(*) cnt, COALESCE(SUM(cur_read),0) reads,
+                       COALESCE(AVG(cur_read),0) avg_read, COALESCE(SUM(cur_like),0) likes
+                    FROM articles WHERE {' AND '.join(aw)}""", ap).fetchone()
+            # 댓글 수 (이 사람이 단 댓글, 기간=update_ts)
+            cw, cp = ["cafe_id=?", "member_key=?"], [cid, mk]
+            if start_ms is not None: cw.append("update_ts>=?"); cp.append(start_ms)
+            if end_ms is not None: cw.append("update_ts<=?"); cp.append(end_ms)
+            cmt = self.conn.execute(
+                f"SELECT COUNT(DISTINCT comment_id) FROM comments WHERE {' AND '.join(cw)}", cp).fetchone()[0]
+            # 최근 닉네임
+            last_nick = self.conn.execute(
+                "SELECT writer_nickname FROM articles WHERE cafe_id=? AND member_key=? ORDER BY write_ts DESC LIMIT 1",
+                (cid, mk)).fetchone()
+            out.append({
+                "cafe_id": cid, "member_key": mk, "naver_id": m["naver_id"],
+                "member_tag": m["member_tag"],
+                "nickname": (last_nick[0] if last_nick else m["nickname"]) or m["nickname"],
+                "article_count": art["cnt"], "total_read": art["reads"],
+                "avg_read": round(art["avg_read"], 1), "total_like": art["likes"],
+                "comment_count": cmt,
+            })
+        return out
+
+    def supporter_articles(self, group_id: int, start_ms: int | None, end_ms: int | None,
+                           menu_id: int | None = None, limit: int = 2000) -> list:
+        """그룹원들이 작성한 게시글 목록 (사진수·글자수 포함)."""
+        members = self.get_supporter_members(group_id)
+        if not members:
+            return []
+        conds = " OR ".join(["(a.cafe_id=? AND a.member_key=?)"] * len(members))
+        params: list = []
+        for m in members:
+            params += [m["cafe_id"], m["member_key"]]
+        extra = []
+        if start_ms is not None: extra.append("a.write_ts>=?"); params.append(start_ms)
+        if end_ms is not None: extra.append("a.write_ts<=?"); params.append(end_ms)
+        if menu_id is not None: extra.append("a.menu_id=?"); params.append(menu_id)
+        where = f"({conds})" + ("".join(" AND " + e for e in extra))
+        return [dict(r) for r in self.conn.execute(
+            f"""SELECT a.cafe_id, a.article_id, a.menu_name, a.write_ts, a.title, a.current_title,
+                       a.writer_nickname, a.member_tag, a.status, a.title_changed,
+                       a.cur_read, a.cur_comment, a.cur_like, a.image_count, a.content_len,
+                       a.body_crawled
+                FROM articles a WHERE {where}
+                ORDER BY a.write_ts DESC LIMIT ?""", params + [limit]).fetchall()]
+
+    def get_supporter_boards(self, group_id: int) -> list:
+        """그룹원들이 글을 쓴 게시판 목록 (필터 드롭다운용)."""
+        members = self.get_supporter_members(group_id)
+        if not members:
+            return []
+        conds = " OR ".join(["(cafe_id=? AND member_key=?)"] * len(members))
+        params: list = []
+        for m in members:
+            params += [m["cafe_id"], m["member_key"]]
+        return [dict(r) for r in self.conn.execute(
+            f"""SELECT menu_id, menu_name, COUNT(*) cnt FROM articles
+                WHERE ({conds}) AND menu_name IS NOT NULL AND menu_name!=''
+                GROUP BY menu_id ORDER BY cnt DESC""", params).fetchall()]
 
     def get_company_stats(self, start_ms: int | None = None,
                           end_ms: int | None = None) -> list:
