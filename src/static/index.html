@@ -403,7 +403,7 @@
 <div id="navstat-modal" style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:200;display:none;align-items:center;justify-content:center">
   <div style="background:#0d1b2e;border:1px solid #0f3460;border-radius:8px;width:92%;max-width:1000px;height:88%;display:flex;flex-direction:column">
     <div style="padding:12px 16px;border-bottom:1px solid #0f3460;display:flex;justify-content:space-between;align-items:center">
-      <span style="font-weight:bold;color:#fbbf24">🏆 네이버 카페 통계 조회 <span style="color:#888;font-size:12px;font-weight:normal">— 스탭 권한만 있으면 크롤링 없이 조회 (삭제 포함·월별 상위 30위)</span></span>
+      <span style="font-weight:bold;color:#fbbf24">🏆 네이버 카페 통계 조회 <span style="color:#888;font-size:12px;font-weight:normal">— 스탭 권한만 있으면 크롤링 없이 조회 (삭제 포함·월별 상위 100위)</span></span>
       <button style="background:none;border:none;color:#888;font-size:18px;cursor:pointer" onclick="closeNaverStatModal()">✕</button>
     </div>
     <div style="padding:10px 16px;border-bottom:1px solid #0f3460;display:flex;gap:6px;align-items:center;flex-wrap:wrap;background:#0a1628">
@@ -1169,7 +1169,7 @@ function supYm() {
 async function refreshNaverStats() {
   const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
   const ym = supYm();
-  if (!confirm(`네이버 카페 통계도구에서 ${ym} 월간 공식 통계(작성글/댓글/받은좋아요 등, 삭제 포함·상위30위)를 가져옵니다.\n로그인 세션이 필요합니다. 진행할까요?`)) return;
+  if (!confirm(`네이버 카페 통계도구에서 ${ym} 월간 공식 통계(작성글/댓글/받은좋아요 등, 삭제 포함·상위100위)를 가져옵니다.\n로그인 세션이 필요합니다. 진행할까요?`)) return;
   showToast('네이버 통계 가져오는 중...');
   try {
     const r = await fetch(`/api/supporters/${gid}/naver_stats?ym=${ym}&refresh=1`).then(r=>r.json());
@@ -1217,7 +1217,7 @@ async function loadNaverStat(refresh) {
       🏆 ${esc(d.cluburl||'')} <span style="color:#4a6fa5">(cafeId ${d.cafe_id})</span> · ${esc(d.ym)} 멤버 순위 ${rows.length}명
       ${d.updated?`<span style="color:#888;font-size:11px">· 수집 ${esc(d.updated)}</span>`:''}
     </div>
-    <div style="font-size:11px;color:#888;margin-bottom:6px">작성게시글수 내림차순 · 각 지표 상위 30위 랭킹 기반(삭제 포함 공식 누적치)</div>
+    <div style="font-size:11px;color:#888;margin-bottom:6px">작성게시글수 내림차순 · 각 지표 상위 100위 랭킹 기반(삭제 포함 공식 누적치)</div>
     <table class="data-table">
       <thead><tr>
         <th>#</th><th>닉네임</th><th>아이디</th><th>등급</th>
@@ -1262,7 +1262,7 @@ async function loadSupStats() {
   // 합계
   const sum = stats.reduce((a,r)=>({p:a.p+r.article_count,rd:a.rd+r.total_read,lk:a.lk+r.total_like,cm:a.cm+r.comment_count}),{p:0,rd:0,lk:0,cm:0});
   const nvNote = nvAny
-    ? `<span style="color:#fbbf24;font-size:11px">🏆 네이버 공식(${nvYm}, 삭제 포함·상위30위) 병합됨</span>`
+    ? `<span style="color:#fbbf24;font-size:11px">🏆 네이버 공식(${nvYm}, 삭제 포함·상위100위) 병합됨</span>`
     : `<span style="color:#888;font-size:11px">🏆 네이버 공식값 없음 — "네이버 통계 갱신"을 눌러 ${nvYm} 데이터를 가져오세요</span>`;
   // 미션 조건(조건충족 게시글수) 컬럼 여부
   const minImg = parseInt(document.getElementById('sup-minimg').value) || 0;

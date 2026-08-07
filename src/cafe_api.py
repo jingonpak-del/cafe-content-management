@@ -646,9 +646,10 @@ def _month_range(year_month: str) -> tuple[str, str]:
 
 def fetch_member_stat(
     cafe_id: int, year_month: str, key: str,
-    client: httpx.Client | None = None,
+    client: httpx.Client | None = None, size: int = 100,
 ) -> list[MemberStatRow]:
-    """단일 지표(key in STAT_METRICS)의 월간 멤버 순위를 가져온다."""
+    """단일 지표(key in STAT_METRICS)의 월간 멤버 순위를 가져온다.
+    size: 순위 상위 몇 명까지(네이버 '더보기' 최대 100)."""
     import urllib.parse
     metric = STAT_METRICS[key]
     own = client is None
@@ -659,7 +660,7 @@ def fetch_member_stat(
         url = (
             f"https://cafe.stat.naver.com/api/cafe/{cafe_id}/rank/{metric}"
             f"?service=CAFE&timeDimension=MONTH&startDate={start}"
-            f"&memberId={mid}&exclude=member%2Cboard%2CdashBoard"
+            f"&memberId={mid}&exclude=member%2Cboard%2CdashBoard&size={size}"
         )
         headers = {
             "Referer": f"https://cafe.stat.naver.com/cafe/{cafe_id}/rank/member",
@@ -698,9 +699,9 @@ def fetch_member_stat(
 
 def fetch_member_stats_all(
     cafe_id: int, year_month: str,
-    client: httpx.Client | None = None,
+    client: httpx.Client | None = None, size: int = 100,
 ) -> dict[str, dict[str, Any]]:
-    """6개 지표를 모두 가져와 user_id 기준으로 병합.
+    """6개 지표를 모두 가져와 user_id 기준으로 병합. (각 지표 상위 size명, 최대 100)
     반환: { user_id: {nickname, level_name, join_date, create, comment,
                       like_sent, like_recv, view, visit} }
     """
@@ -709,7 +710,7 @@ def fetch_member_stats_all(
     try:
         merged: dict[str, dict[str, Any]] = {}
         for key in STAT_METRICS:
-            for row in fetch_member_stat(cafe_id, year_month, key, client=client):
+            for row in fetch_member_stat(cafe_id, year_month, key, client=client, size=size):
                 slot = merged.setdefault(row.user_id, {
                     "user_id": row.user_id, "nickname": row.nickname,
                     "level_name": row.level_name, "join_date": row.join_date,
