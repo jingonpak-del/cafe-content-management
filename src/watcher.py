@@ -60,6 +60,9 @@ class Watcher:
         # 스탭 삭제글 동기화 주기 (30분)
         self._last_removed = 0.0
         self._removed_gap = 1800.0
+        # not_member 재해석 주기 (6시간)
+        self._last_notmember_retry = 0.0
+        self._notmember_gap = 21600.0
 
     # ── 속도 제한 ──────────────────────────────────────────────────────────
 
@@ -298,6 +301,7 @@ class Watcher:
                 self.check_session()
                 self._maybe_sync_sheet()
                 self._resolve_some()
+                self._maybe_retry_notmember()
                 self._maybe_maintenance()
                 self._maybe_backfill_past()
                 self._maybe_sync_removed()
@@ -483,6 +487,21 @@ class Watcher:
                 self._emit("resolve_progress", self.db.resolution_stats())
         except Exception as e:
             self.log(f"  ! 회원 해석 실패: {e}")
+
+    def _maybe_retry_notmember(self):
+        """6시간마다 오래된 not_member 를 pending 으로 되돌려 재해석(자가치유).
+        세션 만료 등으로 한때 실패했던 업체 아이디가 영구 누락되지 않게 한다."""
+        if not self.session_ok:
+            return
+        if (time.monotonic() - self._last_notmember_retry) < self._notmember_gap:
+            return
+        self._last_notmember_retry = time.monotonic()
+        try:
+            n = self.db.requeue_not_member(limit=300)
+            if n:
+                self.log(f"  ↻ not_member {n}건 재해석 대기열로 복귀")
+        except Exception as e:
+            self.log(f"  ! not_member 재큐 실패: {e}")
 
 
 def build_watcher(db: Database, session_dir: Path, account_id: str | None,

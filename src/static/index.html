@@ -170,6 +170,19 @@
 </head>
 <body>
 
+<!-- 세션 만료 경고 배너 (만료 시에만 표시) -->
+<div id="session-alarm" style="display:none; position:sticky; top:0; z-index:1000;
+     background:#7a1a1a; color:#ffdede; border-bottom:2px solid #ff5252;
+     padding:12px 20px; font-size:14px; font-weight:600; text-align:center;
+     box-shadow:0 2px 8px rgba(0,0,0,.4);">
+  <span style="font-size:18px;vertical-align:middle">🚨</span>
+  네이버 로그인 세션이 만료되었습니다 — 업체·멤버 조회와 삭제 동기화가 멈춥니다.
+  <button onclick="reloginFromAlarm()" style="margin-left:14px; background:#ff5252; color:#3a0000;
+     border:none; border-radius:5px; padding:6px 14px; font-weight:700; cursor:pointer">
+     🔑 지금 재로그인</button>
+  <span id="session-alarm-since" style="margin-left:12px; font-weight:400; opacity:.8"></span>
+</div>
+
 <!-- 헤더 -->
 <div id="header">
   <h1>📡 카페 게시글 감시</h1>
@@ -219,6 +232,13 @@
       <div class="tab" data-tab="deleted" onclick="switchTab('deleted')">삭제 <span class="tab-badge" id="cnt-del">0</span></div>
       <div class="tab" data-tab="duplicate" onclick="switchTab('duplicate')">중복 <span class="tab-badge" id="cnt-dup">0</span></div>
       <div class="tab" data-tab="keyword" onclick="switchTab('keyword')">키워드 <span class="tab-badge" id="cnt-kw">0</span></div>
+    </div>
+    <div id="flag-search-bar" style="display:flex;gap:6px;align-items:center;padding:6px 10px;background:#0d1b2e;border-bottom:1px solid #0f3460;flex-shrink:0">
+      <input id="flag-search" type="text" placeholder="제목·작성자·아이디·멤버태그·본문 검색" style="flex:1;background:#0f3460;border:1px solid #1a4a7a;color:#e0e0e0;padding:4px 8px;border-radius:4px;font-size:12px" oninput="debounceFlagSearch()">
+      <select id="flag-cafe" onchange="loadFlagged()" style="background:#0f3460;border:1px solid #1a4a7a;color:#e0e0e0;padding:4px;border-radius:4px;font-size:12px">
+        <option value="0">전체 카페</option>
+      </select>
+      <span id="flag-search-info" style="font-size:11px;color:#888"></span>
     </div>
     <div id="review-toolbar">
       <button class="btn-secondary" onclick="selectAllUnreviewed()">☑ 전체선택</button>
@@ -602,7 +622,40 @@ function updateSessionBadge(ok) {
     updateSessionBadge(d.ok);
     showToast(d.ok ? `세션 유효: ${d.account_id}` : `세션 만료: ${d.reason}`);
   };
+  // 만료 경고 배너 토글
+  const alarm = document.getElementById('session-alarm');
+  if (alarm) {
+    if (ok) {
+      alarm.style.display = 'none';
+      window._sessionExpiredSince = null;
+    } else {
+      alarm.style.display = 'block';
+      if (!window._sessionExpiredSince) window._sessionExpiredSince = Date.now();
+      const since = document.getElementById('session-alarm-since');
+      if (since) since.textContent = '(감지: ' + new Date(window._sessionExpiredSince).toLocaleString('ko-KR') + ')';
+      if (!ok && !window._sessionAlarmBlinked) {
+        window._sessionAlarmBlinked = true;
+        try { document.title = '🚨 세션만료 · ' + document.title; } catch(e){}
+      }
+    }
+    if (ok) { window._sessionAlarmBlinked = false; }
+  }
 }
+
+// 배너의 '지금 재로그인' → 설정 열고 로그인 창 시작
+async function reloginFromAlarm() {
+  openSettings();
+  try { await captureStart(); } catch(e) { showToast('로그인 창 열기 실패: ' + e); }
+}
+
+// 세션 상태 자동 폴링 (라이브 확인) — 만료를 놓치지 않게 60초마다
+async function pollSessionLive() {
+  try {
+    const d = await fetch('/api/session/status?live=true').then(r => r.json());
+    updateSessionBadge(d.ok);
+  } catch (e) { /* 네트워크 일시 오류 무시 */ }
+}
+setInterval(pollSessionLive, 60000);
 
 function updateWatcherBadge(running) {
   const el = document.getElementById('hd-watcher');
@@ -619,11 +672,15 @@ function updateWatcherBadge(running) {
 // ── 카페/게시판 필터 ──────────────────────────────────────────────────────────
 async function loadCafeFilter() {
   const s = await fetch('/api/stats').then(r=>r.json());
+  const opts = '<option value="0">전체 카페</option>' +
+    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
   const sel = document.getElementById('left-cafe');
   const cur = sel.value;
-  sel.innerHTML = '<option value="0">전체 카페</option>' +
-    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
+  sel.innerHTML = opts;
   sel.value = cur;
+  // 우측 이상감지 패널 카페 필터도 동일하게 채움
+  const fsel = document.getElementById('flag-cafe');
+  if (fsel) { const fc = fsel.value; fsel.innerHTML = opts; fsel.value = fc; }
   loadBoardFilter();
 }
 
@@ -731,14 +788,24 @@ function debounceSearch() {
 }
 
 // ── 이상 감지 목록 ────────────────────────────────────────────────────────────
+let flagSearchTimer = null;
+function debounceFlagSearch() {
+  clearTimeout(flagSearchTimer);
+  flagSearchTimer = setTimeout(() => loadFlagged(), 350);
+}
+
 async function loadFlagged(reset = true) {
   if (reset) flaggedOffset = 0;
-  const r = await fetch(`/api/flagged?type=${currentTab}&limit=80&offset=${flaggedOffset}`);
+  const search = encodeURIComponent((document.getElementById('flag-search')?.value || '').trim());
+  const cafeId = document.getElementById('flag-cafe')?.value || '0';
+  const r = await fetch(`/api/flagged?type=${currentTab}&search=${search}&cafe_id=${cafeId}&limit=80&offset=${flaggedOffset}`);
   const data = await r.json();
   const el = document.getElementById('right-content');
   if (reset) el.innerHTML = '';
+  const info = document.getElementById('flag-search-info');
+  if (info) info.textContent = search ? `검색결과` : '';
   if (data.rows.length === 0 && reset) {
-    el.innerHTML = '<div class="empty-msg">이상 감지 항목 없음</div>';
+    el.innerHTML = search ? '<div class="empty-msg">검색 결과 없음</div>' : '<div class="empty-msg">이상 감지 항목 없음</div>';
     return;
   }
   data.rows.forEach(a => el.appendChild(makeFlaggedRow(a)));

@@ -764,6 +764,19 @@ class Database:
             (limit,),
         ).fetchall()
 
+    def requeue_not_member(self, limit: int = 300) -> int:
+        """가장 오래된 not_member 항목을 pending 으로 되돌려 재해석 대상에 넣는다.
+        세션 문제 등으로 실패했던 항목이 영구 방치되지 않게 하는 자가치유용."""
+        cur = self.conn.execute(
+            """UPDATE company_member SET status='pending'
+               WHERE rowid IN (
+                   SELECT rowid FROM company_member
+                   WHERE status='not_member' ORDER BY resolved_at ASC LIMIT ?)""",
+            (limit,),
+        )
+        self.conn.commit()
+        return cur.rowcount
+
     def save_member_resolution(self, naver_id: str, cafe_id: int, member,
                                company_name: str, status: str):
         """조회 결과 저장. member=CafeMember|None."""
@@ -1063,10 +1076,13 @@ class Database:
         text = "\n".join(parts)
         return text[:max_len]
 
-    def get_flagged(self, flag_type: str = "all", limit: int = 100, offset: int = 0) -> list:
+    def get_flagged(self, flag_type: str = "all", limit: int = 100, offset: int = 0,
+                    search: str = "", cafe_id: int | None = None) -> list:
         """이상 감지 게시글: title_changed | deleted | keyword | duplicate | all.
-        스탭삭제(delete_type='staff')된 글은 이미 관리자가 조치한 것이므로 우측 패널에서 제외."""
+        스탭삭제(delete_type='staff')된 글은 이미 관리자가 조치한 것이므로 우측 패널에서 제외.
+        search: 제목/현재제목/작성자닉/멤버태그/네이버ID/본문에서 검색."""
         where = ["COALESCE(a.delete_type,'') != 'staff'"]   # 스탭삭제 숨김 (기록은 보존)
+        params: list = []
         if flag_type == "title_changed":
             where.append("a.title_changed=1")
         elif flag_type == "deleted":
@@ -1077,13 +1093,21 @@ class Database:
             where.append("a.is_duplicate=1")
         else:
             where.append("(a.title_changed=1 OR a.status='deleted' OR a.has_keyword_hit=1 OR a.is_duplicate=1)")
+        if cafe_id:
+            where.append("a.cafe_id=?"); params.append(cafe_id)
+        if search:
+            like = f"%{search}%"
+            where.append("""(a.title LIKE ? OR a.current_title LIKE ? OR a.writer_nickname LIKE ?
+                             OR a.member_tag LIKE ? OR a.naver_id LIKE ? OR a.content_text LIKE ?)""")
+            params += [like, like, like, like, like, like]
 
         # 중복(도배)글은 같은 그룹(작성자+본문)에서 '가장 최근 1개'만 노출.
-        # (같은 도배가 리스트에 수십 개씩 뜨는 것 방지, dup_count로 반복 횟수는 표시)
-        where.append("""(a.is_duplicate=0 OR a.write_ts = (
-            SELECT MAX(b.write_ts) FROM articles b
-            WHERE b.cafe_id=a.cafe_id AND b.member_key=a.member_key
-              AND b.content_hash=a.content_hash))""")
+        # 단, 검색 중일 때는 특정 글을 찾는 목적이므로 전부 노출.
+        if not search:
+            where.append("""(a.is_duplicate=0 OR a.write_ts = (
+                SELECT MAX(b.write_ts) FROM articles b
+                WHERE b.cafe_id=a.cafe_id AND b.member_key=a.member_key
+                  AND b.content_hash=a.content_hash))""")
 
         sql = f"""SELECT a.*,
                         GROUP_CONCAT(DISTINCT h.keyword_text) AS hit_keywords
@@ -1094,7 +1118,7 @@ class Database:
                   ORDER BY a.reviewed ASC,
                            COALESCE(a.flag_ts, a.write_ts) DESC
                   LIMIT ? OFFSET ?"""
-        rows = [dict(r) for r in self.conn.execute(sql, [limit, offset]).fetchall()]
+        rows = [dict(r) for r in self.conn.execute(sql, params + [limit, offset]).fetchall()]
         return rows
 
     def set_reviewed(self, cafe_id: int, article_id: int, reviewed: bool):

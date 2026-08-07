@@ -360,12 +360,15 @@ def flagged(
     type: str = "all",
     limit: int = 100,
     offset: int = 0,
+    search: str = "",
+    cafe_id: int = 0,
 ):
     db = _db()
     try:
         names = _cafe_names()
         urls = _cafe_urls()
-        rows = db.get_flagged(flag_type=type, limit=limit, offset=offset)
+        rows = db.get_flagged(flag_type=type, limit=limit, offset=offset,
+                              search=search.strip(), cafe_id=cafe_id or None)
         for r in rows:
             r["write_str"] = _fmt(r.get("write_ts"))
             r["flag_str"] = _fmt(r.get("flag_ts") or r.get("write_ts"))
@@ -1226,6 +1229,35 @@ def session_status(live: bool = False):
     STATE["session_ok"] = vr.ok
     return {"account_id": account_id, "ok": vr.ok, "reason": vr.reason,
             "accounts": accounts, "pending": SESSION_MGR.has_pending_capture()}
+
+
+_HEALTH_CACHE = {"ts": 0.0, "ok": None, "since": None}
+
+@app.get("/api/session/health")
+def session_health():
+    """포털 등 외부 대시보드가 폴링하는 경량 상태.
+    라이브 확인은 최대 60초에 한 번만 수행(캐시)하여 네이버 부하를 막는다.
+    반환: {ok, account_id, expired_since(ms|null), checked_ago_s}."""
+    import time as _t
+    now = _t.monotonic()
+    cfg = _load_config()
+    account_id = cfg.get("account_id", "")
+    if _HEALTH_CACHE["ok"] is None or (now - _HEALTH_CACHE["ts"]) > 60:
+        ok = bool(account_id) and SESSION_MGR.verify_live(account_id).ok
+        _HEALTH_CACHE["ts"] = now
+        if ok:
+            _HEALTH_CACHE["since"] = None
+        elif _HEALTH_CACHE["ok"] is not False:
+            _HEALTH_CACHE["since"] = now_ms()
+        _HEALTH_CACHE["ok"] = ok
+        STATE["session_ok"] = ok
+    return {
+        "ok": bool(_HEALTH_CACHE["ok"]),
+        "account_id": account_id,
+        "expired_since": _HEALTH_CACHE["since"],
+        "checked_ago_s": round(now - _HEALTH_CACHE["ts"], 1),
+        "service": "checker",
+    }
 
 
 @app.post("/api/session/capture/start")
