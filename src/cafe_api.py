@@ -599,3 +599,127 @@ def fetch_removed_articles(cafe_id: int, page: int = 1,
     finally:
         if own:
             client.close()
+
+
+# ---------------------------------------------------------------------------
+# 네이버 카페 통계도구 (ManageNaverStat) - 멤버 순위 공식 통계
+# cafe.stat.naver.com/api/cafe/{cid}/rank/{metric}
+#   metric: memberCreate(작성게시글수) memberComment(작성댓글수)
+#           memberLike(보낸좋아요) memberLiked(받은좋아요)
+#           memberCv(조회수) memberVisit(방문횟수)
+# 응답: result.statData[0].data.rows.{v, cnt, rank, memberInfos[0]=[{userId,nickName,...}]}
+# 삭제 포함 공식 누적치. 랭킹이라 월별 상위 30명만 반환됨.
+# ---------------------------------------------------------------------------
+
+STAT_METRICS = {
+    "create": "memberCreate",     # 작성 게시글수
+    "comment": "memberComment",   # 작성 댓글수
+    "like_sent": "memberLike",    # 보낸 좋아요수
+    "like_recv": "memberLiked",   # 받은 좋아요수
+    "view": "memberCv",           # 조회수
+    "visit": "memberVisit",       # 방문횟수
+}
+
+
+@dataclass(frozen=True)
+class MemberStatRow:
+    rank: int
+    user_id: str        # 실제 네이버 로그인 아이디
+    nickname: str
+    level_name: str
+    join_date: str
+    id_no: str          # 카페 통계 내부 멤버코드
+    count: int
+
+
+def _month_range(year_month: str) -> tuple[str, str]:
+    """'2026-07' -> ('2026-07-01', '2026-07-31')"""
+    y, m = (int(x) for x in year_month.split("-")[:2])
+    if m == 12:
+        ny, nm = y + 1, 1
+    else:
+        ny, nm = y, m + 1
+    import datetime as _dt
+    last = (_dt.date(ny, nm, 1) - _dt.timedelta(days=1)).day
+    return f"{y:04d}-{m:02d}-01", f"{y:04d}-{m:02d}-{last:02d}"
+
+
+def fetch_member_stat(
+    cafe_id: int, year_month: str, key: str,
+    client: httpx.Client | None = None,
+) -> list[MemberStatRow]:
+    """단일 지표(key in STAT_METRICS)의 월간 멤버 순위를 가져온다."""
+    import urllib.parse
+    metric = STAT_METRICS[key]
+    own = client is None
+    client = client or make_client()
+    try:
+        start, _end = _month_range(year_month)
+        mid = urllib.parse.quote("멤버")
+        url = (
+            f"https://cafe.stat.naver.com/api/cafe/{cafe_id}/rank/{metric}"
+            f"?service=CAFE&timeDimension=MONTH&startDate={start}"
+            f"&memberId={mid}&exclude=member%2Cboard%2CdashBoard"
+        )
+        headers = {
+            "Referer": f"https://cafe.stat.naver.com/cafe/{cafe_id}/rank/member",
+            "Origin": "https://cafe.stat.naver.com",
+        }
+        r = client.get(url, headers=headers)
+        if r.status_code != 200:
+            return []
+        try:
+            rows = r.json()["result"]["statData"][0]["data"]["rows"]
+        except (KeyError, IndexError, TypeError, ValueError):
+            return []
+        cnt = rows.get("cnt") or []
+        rank = rows.get("rank") or []
+        infos = (rows.get("memberInfos") or [[]])[0]
+        out: list[MemberStatRow] = []
+        for i in range(len(cnt)):
+            info = infos[i] if i < len(infos) else {}
+            uid = (info or {}).get("userId")
+            if not uid:
+                continue
+            out.append(MemberStatRow(
+                rank=rank[i] if i < len(rank) else i + 1,
+                user_id=uid,
+                nickname=(info.get("nickName") or ""),
+                level_name=(info.get("memberLevelName") or ""),
+                join_date=(info.get("joinDate") or ""),
+                id_no=(info.get("idNo") or ""),
+                count=cnt[i] or 0,
+            ))
+        return out
+    finally:
+        if own:
+            client.close()
+
+
+def fetch_member_stats_all(
+    cafe_id: int, year_month: str,
+    client: httpx.Client | None = None,
+) -> dict[str, dict[str, Any]]:
+    """6개 지표를 모두 가져와 user_id 기준으로 병합.
+    반환: { user_id: {nickname, level_name, join_date, create, comment,
+                      like_sent, like_recv, view, visit} }
+    """
+    own = client is None
+    client = client or make_client()
+    try:
+        merged: dict[str, dict[str, Any]] = {}
+        for key in STAT_METRICS:
+            for row in fetch_member_stat(cafe_id, year_month, key, client=client):
+                slot = merged.setdefault(row.user_id, {
+                    "user_id": row.user_id, "nickname": row.nickname,
+                    "level_name": row.level_name, "join_date": row.join_date,
+                    "create": None, "comment": None, "like_sent": None,
+                    "like_recv": None, "view": None, "visit": None,
+                })
+                slot[key] = row.count
+                if row.nickname:
+                    slot["nickname"] = row.nickname
+        return merged
+    finally:
+        if own:
+            client.close()

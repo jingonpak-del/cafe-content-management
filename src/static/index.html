@@ -371,6 +371,8 @@
       <select id="sup-board" class="form-input" style="width:auto;padding:4px 8px"><option value="-1">전체 게시판</option></select>
       <button class="btn-success" onclick="loadSupStats()">🔍 조회</button>
       <button class="btn-primary" onclick="refreshSupporter()">🔄 최신값 갱신</button>
+      <button class="btn-secondary" onclick="refreshNaverStats()" title="네이버 카페 통계도구에서 월간 공식값(삭제 포함)을 새로 가져옵니다">🏆 네이버 통계 갱신</button>
+      <button class="btn-secondary" onclick="downloadSupExcel()" title="크롤 데이터 + 네이버 공식 통계를 엑셀로 저장">📥 엑셀</button>
     </div>
     <!-- 그룹원 관리 영역 -->
     <div id="sup-members-area" style="display:none;padding:10px 16px;border-bottom:1px solid #0f3460;background:#0d1b2e">
@@ -1126,6 +1128,37 @@ function supQS() {
   return qs.toString();
 }
 
+// 선택 기간의 대표 월(YYYY-MM). 시작일 기준, 없으면 종료일/이번달.
+function supYm() {
+  const s = document.getElementById('sup-start').value;
+  const e = document.getElementById('sup-end').value;
+  const d = s || e;
+  if (d && d.length >= 7) return d.slice(0,7);
+  return new Date().toISOString().slice(0,7);
+}
+
+// 네이버 카페 통계도구에서 월간 공식 통계를 새로 가져와 캐시
+async function refreshNaverStats() {
+  const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
+  const ym = supYm();
+  if (!confirm(`네이버 카페 통계도구에서 ${ym} 월간 공식 통계(작성글/댓글/받은좋아요 등, 삭제 포함·상위30위)를 가져옵니다.\n로그인 세션이 필요합니다. 진행할까요?`)) return;
+  showToast('네이버 통계 가져오는 중...');
+  try {
+    const r = await fetch(`/api/supporters/${gid}/naver_stats?ym=${ym}&refresh=1`).then(r=>r.json());
+    const matched = (r.rows||[]).filter(x=>x.nv_matched).length;
+    showToast(`✅ ${ym} 네이버 통계 완료 (그룹원 ${matched}명 매칭)`);
+    loadSupStats();
+  } catch(e) { showToast('네이버 통계 실패: '+e); }
+}
+
+// 그룹원 통계 엑셀 다운로드 (크롤 + 네이버 공식)
+function downloadSupExcel() {
+  const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
+  const qs = supQS();
+  const ym = supYm();
+  window.open(`/api/supporters/${gid}/export.xlsx?${qs}${qs?'&':''}ym=${ym}`, '_blank');
+}
+
 async function loadSupStats() {
   const gid = curSupGroup(); if (!gid) return;
   const body = document.getElementById('supporter-box-body');
@@ -1133,13 +1166,32 @@ async function loadSupStats() {
   const stats = await fetch(`/api/supporters/${gid}/stats?`+supQS()).then(r=>r.json());
   const arts = await fetch(`/api/supporters/${gid}/articles?`+supQS()).then(r=>r.json());
   const rows = arts.rows || [];
+  // 네이버 공식 통계(캐시) 병합 — 선택 기간의 월 기준
+  let nvMap = {}, nvYm = supYm(), nvAny = false;
+  try {
+    const nv = await fetch(`/api/supporters/${gid}/naver_stats?ym=${nvYm}`).then(r=>r.json());
+    (nv.rows||[]).forEach(r=>{ nvMap[r.cafe_id+'|'+r.member_key]=r; if(r.nv_matched) nvAny=true; });
+  } catch(e){}
   // 합계
   const sum = stats.reduce((a,r)=>({p:a.p+r.article_count,rd:a.rd+r.total_read,lk:a.lk+r.total_like,cm:a.cm+r.comment_count}),{p:0,rd:0,lk:0,cm:0});
+  const nvNote = nvAny
+    ? `<span style="color:#fbbf24;font-size:11px">🏆 네이버 공식(${nvYm}, 삭제 포함·상위30위) 병합됨</span>`
+    : `<span style="color:#888;font-size:11px">🏆 네이버 공식값 없음 — "네이버 통계 갱신"을 눌러 ${nvYm} 데이터를 가져오세요</span>`;
   body.innerHTML = `
-    <div class="section-title" style="margin:0 -12px 8px">📊 그룹원별 통계 (선택 기간·게시판 기준)</div>
+    <div class="section-title" style="margin:0 -12px 8px">📊 그룹원별 통계 (선택 기간·게시판 기준) &nbsp; ${nvNote}</div>
     <table class="data-table">
-      <thead><tr><th>서포터즈</th><th>아이디</th><th>카페</th><th>게시글수</th><th>총조회</th><th>평균조회</th><th>좋아요</th><th>댓글수</th></tr></thead>
-      <tbody>${stats.map(r=>`<tr>
+      <thead><tr>
+        <th>서포터즈</th><th>아이디</th><th>카페</th>
+        <th title="크롤로 수집한 게시글수">게시글수</th><th>총조회</th><th>평균조회</th>
+        <th title="크롤로 수집한 좋아요">좋아요</th><th>댓글수</th>
+        <th style="color:#fbbf24" title="네이버 공식 작성 게시글수(삭제 포함)">🏆작성글</th>
+        <th style="color:#fbbf24" title="네이버 공식 작성 댓글수">🏆댓글</th>
+        <th style="color:#fbbf24" title="네이버 공식 받은 좋아요수">🏆받은♥</th>
+      </tr></thead>
+      <tbody>${stats.map(r=>{
+        const nv = nvMap[r.cafe_id+'|'+r.member_key] || {};
+        const nvcell = (v)=> v!=null ? fmtNum(v) : '<span style="color:#555">-</span>';
+        return `<tr>
         <td style="color:#93c5fd">${esc(r.nickname)} <span class="tag-badge">#${esc(r.member_tag||'')}</span></td>
         <td style="user-select:all">${esc(r.naver_id||'')}</td>
         <td style="color:#4a6fa5;font-size:11px">${esc(r.cafe_name)}</td>
@@ -1148,11 +1200,15 @@ async function loadSupStats() {
         <td style="text-align:right">${fmtNum(r.avg_read)}</td>
         <td style="text-align:right">${fmtNum(r.total_like)}</td>
         <td style="text-align:right">${fmtNum(r.comment_count)}</td>
-      </tr>`).join('')}
+        <td style="text-align:right;color:#fbbf24;font-weight:bold">${nvcell(nv.nv_create)}</td>
+        <td style="text-align:right;color:#fde68a">${nvcell(nv.nv_comment)}</td>
+        <td style="text-align:right;color:#fde68a">${nvcell(nv.nv_like_recv)}</td>
+      </tr>`;}).join('')}
       <tr style="border-top:2px solid #0f3460;font-weight:bold;color:#4ade80">
         <td colspan="3">합계 (${stats.length}명)</td>
         <td style="text-align:right">${fmtNum(sum.p)}</td><td style="text-align:right">${fmtNum(sum.rd)}</td>
         <td style="text-align:right">-</td><td style="text-align:right">${fmtNum(sum.lk)}</td><td style="text-align:right">${fmtNum(sum.cm)}</td>
+        <td colspan="3"></td>
       </tr></tbody>
     </table>
     <div class="section-title" style="margin:16px -12px 8px">📝 작성 게시글 목록 (${rows.length}건)</div>

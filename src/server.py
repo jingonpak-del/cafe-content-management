@@ -738,6 +738,147 @@ def sup_articles(group_id: int, start: str = "", end: str = "", menu_id: int = -
         db.close()
 
 
+def _ensure_naver_stats(db, cafe_id: int, ym: str, refresh: bool):
+    """캐시가 없거나 refresh면 네이버 통계도구에서 가져와 저장. {user_id: row} 반환."""
+    from . import cafe_api
+    cached = db.get_naver_stats(cafe_id, ym)
+    if cached and not refresh:
+        return cached
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = (SESSION_MGR.load_cookies(account_id)
+               if account_id and SESSION_MGR.verify(account_id).ok else None)
+    if not cookies:
+        return cached  # 세션 없으면 캐시라도 반환
+    client = cafe_api.make_client(cookies)
+    try:
+        merged = cafe_api.fetch_member_stats_all(cafe_id, ym, client=client)
+        if merged:
+            db.save_naver_stats(cafe_id, ym, merged)
+            return db.get_naver_stats(cafe_id, ym)
+        return cached
+    finally:
+        client.close()
+
+
+def _supporter_naver_rows(db, group_id: int, ym: str, refresh: bool):
+    """그룹원별 네이버 공식 통계를 매칭해 반환 (naver_id, 없으면 닉네임 매칭)."""
+    members = db.get_supporter_members(group_id)
+    cafe_ids = sorted({m["cafe_id"] for m in members})
+    by_cafe = {}
+    matched_flag = {}
+    for cid in cafe_ids:
+        stats = _ensure_naver_stats(db, cid, ym, refresh)
+        by_cafe[cid] = stats
+        matched_flag[cid] = bool(stats)
+    out = []
+    for m in members:
+        cid = m["cafe_id"]
+        stats = by_cafe.get(cid, {})
+        nid = (m.get("naver_id") or "").strip().lower()
+        row = None
+        if nid and nid in {k.lower(): k for k in stats}:
+            # 대소문자 무시 매칭
+            key = {k.lower(): k for k in stats}[nid]
+            row = stats[key]
+        if row is None:
+            # 닉네임 폴백
+            nick = (m.get("nickname") or "").strip()
+            if nick:
+                for r in stats.values():
+                    if (r.get("nickname") or "").strip() == nick:
+                        row = r
+                        break
+        out.append({
+            "cafe_id": cid, "member_key": m["member_key"],
+            "naver_id": m.get("naver_id"), "nickname": m.get("nickname"),
+            "member_tag": m.get("member_tag"),
+            "nv_matched": row is not None,
+            "nv_user_id": (row or {}).get("user_id"),
+            "nv_create": (row or {}).get("n_create"),
+            "nv_comment": (row or {}).get("n_comment"),
+            "nv_like_sent": (row or {}).get("n_like_sent"),
+            "nv_like_recv": (row or {}).get("n_like_recv"),
+            "nv_view": (row or {}).get("n_view"),
+            "nv_visit": (row or {}).get("n_visit"),
+            "nv_level": (row or {}).get("level_name"),
+        })
+    ages = {cid: db.naver_stats_age(cid, ym) for cid in cafe_ids}
+    return out, ages
+
+
+@app.get("/api/supporters/{group_id}/naver_stats")
+def sup_naver_stats(group_id: int, ym: str = "", refresh: int = 0):
+    """네이버 카페 통계도구(멤버순위) 월간 공식 통계 (삭제 포함).
+    ym='YYYY-MM'. refresh=1이면 네이버에서 새로 가져옴. 상위 30명 랭킹 기반."""
+    if not ym:
+        ym = datetime.now().strftime("%Y-%m")
+    db = _db()
+    try:
+        rows, ages = _supporter_naver_rows(db, group_id, ym, bool(refresh))
+        names = _cafe_names()
+        for r in rows:
+            r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
+        return {"ym": ym, "rows": rows,
+                "ages": {str(k): (_fmt(v) if v else None) for k, v in ages.items()}}
+    finally:
+        db.close()
+
+
+@app.get("/api/supporters/{group_id}/export.xlsx")
+def sup_export_xlsx(group_id: int, start: str = "", end: str = "",
+                    menu_id: int = -1, ym: str = ""):
+    """그룹원 통계를 엑셀(xlsx)로 다운로드 — 크롤 데이터 + 네이버 공식 통계."""
+    import io as _io
+    from openpyxl import Workbook
+    try:
+        s, e = _date_range(start, end)
+    except ValueError:
+        return JSONResponse({"error": "날짜 형식 YYYY-MM-DD"}, status_code=400)
+    if not ym:
+        ym = (start[:7] if len(start) >= 7 else datetime.now().strftime("%Y-%m"))
+    db = _db()
+    try:
+        names = _cafe_names()
+        crawled = db.supporter_stats(group_id, s, e, menu_id if menu_id >= 0 else None)
+        nv_rows, _ages = _supporter_naver_rows(db, group_id, ym, False)
+        nv_by_key = {(r["cafe_id"], r["member_key"]): r for r in nv_rows}
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "서포터즈통계"
+        headers = [
+            "카페", "닉네임", "아이디", "멤버태그",
+            "[크롤]게시글수", "[크롤]총조회", "[크롤]평균조회", "[크롤]좋아요", "[크롤]댓글수",
+            f"[네이버{ym}]작성글수", "[네이버]작성댓글수", "[네이버]받은좋아요",
+            "[네이버]보낸좋아요", "[네이버]조회수", "[네이버]방문수", "[네이버]매칭",
+        ]
+        ws.append(headers)
+        for c in crawled:
+            nv = nv_by_key.get((c["cafe_id"], c["member_key"]), {})
+            ws.append([
+                names.get(c["cafe_id"], str(c["cafe_id"])),
+                c.get("nickname"), c.get("naver_id"), c.get("member_tag"),
+                c.get("article_count"), c.get("total_read"), c.get("avg_read"),
+                c.get("total_like"), c.get("comment_count"),
+                nv.get("nv_create"), nv.get("nv_comment"), nv.get("nv_like_recv"),
+                nv.get("nv_like_sent"), nv.get("nv_view"), nv.get("nv_visit"),
+                "O" if nv.get("nv_matched") else "X",
+            ])
+        for col in ws.columns:
+            width = max((len(str(c.value)) for c in col if c.value is not None), default=8)
+            ws.column_dimensions[col[0].column_letter].width = min(width + 2, 30)
+        buf = _io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        fname = f"supporter_stats_{group_id}_{ym}.xlsx"
+        return StreamingResponse(
+            buf,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+    finally:
+        db.close()
+
+
 @app.get("/api/supporters/refresh_status")
 def sup_refresh_status():
     return SUP_REFRESH

@@ -196,6 +196,24 @@ CREATE TABLE IF NOT EXISTS supporter_member (
     PRIMARY KEY (group_id, cafe_id, member_key)
 );
 
+-- 네이버 카페 통계도구(멤버순위) 월간 공식 통계 캐시 (삭제 포함 누적)
+CREATE TABLE IF NOT EXISTS naver_member_stat (
+    cafe_id     INTEGER NOT NULL,
+    year_month  TEXT NOT NULL,       -- 'YYYY-MM'
+    user_id     TEXT NOT NULL,       -- 실제 네이버 로그인 아이디
+    nickname    TEXT,
+    level_name  TEXT,
+    join_date   TEXT,
+    n_create    INTEGER,             -- 작성 게시글수
+    n_comment   INTEGER,             -- 작성 댓글수
+    n_like_sent INTEGER,             -- 보낸 좋아요수
+    n_like_recv INTEGER,             -- 받은 좋아요수
+    n_view      INTEGER,             -- 조회수
+    n_visit     INTEGER,             -- 방문횟수
+    updated_at  INTEGER,
+    PRIMARY KEY (cafe_id, year_month, user_id)
+);
+
 -- 글관리: 게시글을 추적할 등록 작성자 (카페별 member_key 단위)
 CREATE TABLE IF NOT EXISTS watched_writer (
     cafe_id      INTEGER NOT NULL,
@@ -1335,6 +1353,38 @@ class Database:
             f"""SELECT menu_id, menu_name, COUNT(*) cnt FROM articles
                 WHERE ({conds}) AND menu_name IS NOT NULL AND menu_name!=''
                 GROUP BY menu_id ORDER BY cnt DESC""", params).fetchall()]
+
+    # --- 네이버 카페 통계도구(멤버순위) 캐시 ---
+    def save_naver_stats(self, cafe_id: int, year_month: str, merged: dict) -> int:
+        """fetch_member_stats_all() 결과(dict)를 캐시에 저장."""
+        ts = now_ms()
+        n = 0
+        for uid, d in merged.items():
+            self.conn.execute(
+                """INSERT OR REPLACE INTO naver_member_stat
+                   (cafe_id, year_month, user_id, nickname, level_name, join_date,
+                    n_create, n_comment, n_like_sent, n_like_recv, n_view, n_visit, updated_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (cafe_id, year_month, uid, d.get("nickname"), d.get("level_name"),
+                 d.get("join_date"), d.get("create"), d.get("comment"),
+                 d.get("like_sent"), d.get("like_recv"), d.get("view"), d.get("visit"), ts))
+            n += 1
+        self.conn.commit()
+        return n
+
+    def get_naver_stats(self, cafe_id: int, year_month: str) -> dict:
+        """캐시된 네이버 통계를 {user_id: row} 로 반환."""
+        rows = self.conn.execute(
+            "SELECT * FROM naver_member_stat WHERE cafe_id=? AND year_month=?",
+            (cafe_id, year_month)).fetchall()
+        return {r["user_id"]: dict(r) for r in rows}
+
+    def naver_stats_age(self, cafe_id: int, year_month: str) -> int | None:
+        """캐시 최신 updated_at(ms). 없으면 None."""
+        r = self.conn.execute(
+            "SELECT MAX(updated_at) FROM naver_member_stat WHERE cafe_id=? AND year_month=?",
+            (cafe_id, year_month)).fetchone()
+        return r[0] if r and r[0] else None
 
     def get_company_stats(self, start_ms: int | None = None,
                           end_ms: int | None = None) -> list:
