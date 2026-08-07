@@ -1283,19 +1283,28 @@ class Database:
             "SELECT * FROM supporter_member WHERE group_id=? ORDER BY added_at", (group_id,)).fetchall()]
 
     def supporter_stats(self, group_id: int, start_ms: int | None, end_ms: int | None,
-                        menu_id: int | None = None) -> list:
-        """그룹원별 기간 통계: 게시글수·총조회·평균조회·좋아요·댓글수(+게시판필터)."""
+                        menu_id: int | None = None,
+                        min_img: int = 0, min_len: int = 0) -> list:
+        """그룹원별 기간 통계: 게시글수·총조회·평균조회·좋아요·댓글수(+게시판필터).
+        min_img/min_len>0이면 '조건충족 게시글수'(사진≥min_img AND 글자≥min_len)를 함께 계산.
+        (사진수·글자수는 본문 크롤된 글에서만 집계되므로 '최신값 갱신' 필요)"""
         members = self.get_supporter_members(group_id)
         out = []
+        mission = (min_img > 0 or min_len > 0)
         for m in members:
             cid, mk = m["cafe_id"], m["member_key"]
             aw, ap = ["cafe_id=?", "member_key=?"], [cid, mk]
             if start_ms is not None: aw.append("write_ts>=?"); ap.append(start_ms)
             if end_ms is not None: aw.append("write_ts<=?"); ap.append(end_ms)
             if menu_id is not None: aw.append("menu_id=?"); ap.append(menu_id)
+            qsel = ""
+            if mission:
+                qsel = (", SUM(CASE WHEN COALESCE(image_count,0)>=? "
+                        "AND COALESCE(content_len,0)>=? THEN 1 ELSE 0 END) qcnt")
+                ap = [min_img, min_len] + ap  # SELECT의 ? 가 WHERE보다 앞
             art = self.conn.execute(
                 f"""SELECT COUNT(*) cnt, COALESCE(SUM(cur_read),0) reads,
-                       COALESCE(AVG(cur_read),0) avg_read, COALESCE(SUM(cur_like),0) likes
+                       COALESCE(AVG(cur_read),0) avg_read, COALESCE(SUM(cur_like),0) likes{qsel}
                     FROM articles WHERE {' AND '.join(aw)}""", ap).fetchone()
             # 댓글 수 (이 사람이 단 댓글, 기간=update_ts)
             cw, cp = ["cafe_id=?", "member_key=?"], [cid, mk]
@@ -1307,14 +1316,17 @@ class Database:
             last_nick = self.conn.execute(
                 "SELECT writer_nickname FROM articles WHERE cafe_id=? AND member_key=? ORDER BY write_ts DESC LIMIT 1",
                 (cid, mk)).fetchone()
-            out.append({
+            row = {
                 "cafe_id": cid, "member_key": mk, "naver_id": m["naver_id"],
                 "member_tag": m["member_tag"],
                 "nickname": (last_nick[0] if last_nick else m["nickname"]) or m["nickname"],
                 "article_count": art["cnt"], "total_read": art["reads"],
                 "avg_read": round(art["avg_read"], 1), "total_like": art["likes"],
                 "comment_count": cmt,
-            })
+            }
+            if mission:
+                row["qualify_count"] = art["qcnt"] or 0
+            out.append(row)
         return out
 
     def supporter_articles(self, group_id: int, start_ms: int | None, end_ms: int | None,

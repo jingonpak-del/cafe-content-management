@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import threading
 import time
 from datetime import datetime
@@ -699,7 +700,8 @@ def sup_boards(group_id: int):
 
 
 @app.get("/api/supporters/{group_id}/stats")
-def sup_stats(group_id: int, start: str = "", end: str = "", menu_id: int = -1):
+def sup_stats(group_id: int, start: str = "", end: str = "", menu_id: int = -1,
+              min_img: int = 0, min_len: int = 0):
     try:
         s, e = _date_range(start, end)
     except ValueError:
@@ -707,7 +709,8 @@ def sup_stats(group_id: int, start: str = "", end: str = "", menu_id: int = -1):
     db = _db()
     try:
         names = _cafe_names()
-        rows = db.supporter_stats(group_id, s, e, menu_id if menu_id >= 0 else None)
+        rows = db.supporter_stats(group_id, s, e, menu_id if menu_id >= 0 else None,
+                                  min_img=max(0, min_img), min_len=max(0, min_len))
         for r in rows:
             r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
         return rows
@@ -877,6 +880,102 @@ def sup_export_xlsx(group_id: int, start: str = "", end: str = "",
             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
     finally:
         db.close()
+
+
+def _resolve_cafe(cafe: str, client) -> tuple[int, str]:
+    """cafe 파라미터(숫자ID 또는 cluburl 또는 전체URL)를 (cafe_id, cluburl)로 해석."""
+    from . import cafe_api
+    cafe = (cafe or "").strip()
+    if cafe.isdigit():
+        return int(cafe), ""
+    # URL에서 cluburl 추출
+    m = re.search(r"cafe\.naver\.com/([A-Za-z0-9_-]+)", cafe)
+    cluburl = m.group(1) if m else cafe
+    return cafe_api.resolve_club_id(cluburl, client=client), cluburl
+
+
+def _lookup_naver_stats(cafe: str, ym: str, refresh: bool):
+    """임의 카페(크롤 불필요)의 네이버 공식 멤버통계를 가져와 캐시하고 정렬 반환."""
+    from . import cafe_api
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = (SESSION_MGR.load_cookies(account_id)
+               if account_id and SESSION_MGR.verify(account_id).ok else None)
+    if not cookies:
+        return None, "로그인 세션이 필요합니다"
+    client = cafe_api.make_client(cookies)
+    db = _db()
+    try:
+        try:
+            cid, cluburl = _resolve_cafe(cafe, client)
+        except Exception as ex:
+            return None, f"카페를 찾을 수 없습니다: {ex}"
+        cached = db.get_naver_stats(cid, ym)
+        if not cached or refresh:
+            merged = cafe_api.fetch_member_stats_all(cid, ym, client=client)
+            if merged:
+                db.save_naver_stats(cid, ym, merged)
+                cached = db.get_naver_stats(cid, ym)
+            elif not cached:
+                return None, "통계 접근 권한이 없거나(스탭 아님) 해당 월 데이터가 없습니다"
+        rows = list(cached.values())
+        # 작성글수 내림차순 정렬
+        rows.sort(key=lambda r: (r.get("n_create") or 0), reverse=True)
+        age = db.naver_stats_age(cid, ym)
+        return {"cafe_id": cid, "cluburl": cluburl, "ym": ym,
+                "count": len(rows), "rows": rows,
+                "updated": _fmt(age) if age else None}, None
+    finally:
+        client.close()
+        db.close()
+
+
+@app.get("/api/naver_stats/lookup")
+def naver_stats_lookup(cafe: str = "", ym: str = "", refresh: int = 0):
+    """크롤링 안 한 카페도 스탭 권한만 있으면 네이버 공식 멤버통계 조회.
+    cafe = 숫자 cafeId / cluburl / 전체 URL. ym='YYYY-MM'."""
+    if not cafe:
+        return JSONResponse({"error": "cafe(URL 또는 ID) 필요"}, status_code=400)
+    if not ym:
+        ym = datetime.now().strftime("%Y-%m")
+    data, err = _lookup_naver_stats(cafe, ym, bool(refresh))
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    return data
+
+
+@app.get("/api/naver_stats/export.xlsx")
+def naver_stats_lookup_xlsx(cafe: str = "", ym: str = ""):
+    """임의 카페 네이버 공식 멤버통계 엑셀 다운로드."""
+    import io as _io
+    from openpyxl import Workbook
+    if not cafe:
+        return JSONResponse({"error": "cafe 필요"}, status_code=400)
+    if not ym:
+        ym = datetime.now().strftime("%Y-%m")
+    data, err = _lookup_naver_stats(cafe, ym, False)
+    if err:
+        return JSONResponse({"error": err}, status_code=400)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = f"네이버통계_{ym}"
+    ws.append(["순위", "닉네임", "아이디", "등급", "가입일",
+               "작성게시글수", "작성댓글수", "받은좋아요", "보낸좋아요", "조회수", "방문횟수"])
+    for i, r in enumerate(data["rows"], 1):
+        ws.append([i, r.get("nickname"), r.get("user_id"), r.get("level_name"),
+                   r.get("join_date"), r.get("n_create"), r.get("n_comment"),
+                   r.get("n_like_recv"), r.get("n_like_sent"), r.get("n_view"), r.get("n_visit")])
+    for col in ws.columns:
+        width = max((len(str(c.value)) for c in col if c.value is not None), default=8)
+        ws.column_dimensions[col[0].column_letter].width = min(width + 2, 30)
+    buf = _io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = f"naver_stats_{data['cafe_id']}_{ym}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
 @app.get("/api/supporters/refresh_status")
