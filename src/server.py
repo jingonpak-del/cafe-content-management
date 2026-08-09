@@ -102,12 +102,19 @@ def _save_config(cfg: dict):
 
 def _cafe_names() -> dict[int, str]:
     cfg = _load_config()
-    return {c["cafe_id"]: c.get("name") or c.get("cafe_url", "") for c in cfg.get("cafes", [])}
+    out = {c["cafe_id"]: c.get("name") or c.get("cafe_url", "") for c in cfg.get("cafes", [])}
+    # 통계 전용 카페(크롤 안 함)도 이름 표시
+    for c in cfg.get("stat_cafes", []):
+        out.setdefault(c["cafe_id"], (c.get("name") or c.get("cafe_url", "")) + " (통계전용)")
+    return out
 
 
 def _cafe_urls() -> dict[int, str]:
     cfg = _load_config()
-    return {c["cafe_id"]: c.get("cafe_url", "") for c in cfg.get("cafes", [])}
+    out = {c["cafe_id"]: c.get("cafe_url", "") for c in cfg.get("cafes", [])}
+    for c in cfg.get("stat_cafes", []):
+        out.setdefault(c["cafe_id"], c.get("cafe_url", ""))
+    return out
 
 
 def _member_page_url(cafe_url: str, cafe_id: int, member_key: str) -> str:
@@ -657,9 +664,10 @@ async def sup_members_bulk(group_id: int, req: dict):
     registered = 0
     not_found = []
     try:
+        search_cafes = list(cfg.get("cafes", [])) + list(cfg.get("stat_cafes", []))
         for kw in ids:
             hit = False
-            for c in cfg.get("cafes", []):
+            for c in search_cafes:
                 cid = c["cafe_id"]
                 if only_cafe and cid != only_cafe:
                     continue
@@ -928,6 +936,65 @@ def _lookup_naver_stats(cafe: str, ym: str, refresh: bool):
     finally:
         client.close()
         db.close()
+
+
+@app.get("/api/supporters/stat_cafes")
+def list_stat_cafes():
+    """서포터즈 분석용 통계 전용 카페(크롤 안 함) 목록."""
+    return _load_config().get("stat_cafes", [])
+
+
+@app.post("/api/supporters/stat_cafes")
+async def add_stat_cafe(req: dict):
+    """통계 전용 카페 추가. cafe=URL/ID. 스탭 권한(통계 접근) 검증 후 저장."""
+    from . import cafe_api
+    cafe = (req.get("cafe") or "").strip()
+    if not cafe:
+        return JSONResponse({"error": "cafe(URL 또는 ID) 필요"}, status_code=400)
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = (SESSION_MGR.load_cookies(account_id)
+               if account_id and SESSION_MGR.verify(account_id).ok else None)
+    if not cookies:
+        return JSONResponse({"error": "로그인 세션이 필요합니다"}, status_code=400)
+    client = cafe_api.make_client(cookies)
+    try:
+        try:
+            cid, cluburl = _resolve_cafe(cafe, client)
+        except Exception as ex:
+            return JSONResponse({"error": f"카페를 찾을 수 없습니다: {ex}"}, status_code=400)
+        # 이미 크롤 대상이거나 등록됨?
+        if any(c["cafe_id"] == cid for c in cfg.get("cafes", [])):
+            return JSONResponse({"error": "이미 감시(크롤) 카페로 등록되어 있습니다"}, status_code=400)
+        stat_cafes = cfg.get("stat_cafes", [])
+        if any(c["cafe_id"] == cid for c in stat_cafes):
+            return JSONResponse({"error": "이미 등록된 통계 카페입니다"}, status_code=400)
+        # 통계 접근(스탭 권한) 검증 — 이번달 작성글 랭킹 1건이라도 나오면 OK
+        ym = datetime.now().strftime("%Y-%m")
+        rows = cafe_api.fetch_member_stat(cid, ym, "create", client=client, size=5)
+        if not rows:
+            # 지난달로 재시도 (이번달 데이터가 아직 없을 수 있음)
+            import datetime as _dt
+            prev = (_dt.date(int(ym[:4]), int(ym[5:7]), 1) - _dt.timedelta(days=1)).strftime("%Y-%m")
+            rows = cafe_api.fetch_member_stat(cid, prev, "create", client=client, size=5)
+        if not rows:
+            return JSONResponse({"error": "통계 접근 권한이 없습니다(이 계정이 해당 카페 스탭이 아닙니다)"}, status_code=400)
+        name = (req.get("name") or cluburl or str(cid)).strip()
+        stat_cafes.append({"cafe_id": cid, "cafe_url": cluburl, "name": name})
+        cfg["stat_cafes"] = stat_cafes
+        _save_config(cfg)
+        return {"ok": True, "cafe_id": cid, "cafe_url": cluburl, "name": name,
+                "stat_cafes": stat_cafes}
+    finally:
+        client.close()
+
+
+@app.delete("/api/supporters/stat_cafes/{cafe_id}")
+def del_stat_cafe(cafe_id: int):
+    cfg = _load_config()
+    cfg["stat_cafes"] = [c for c in cfg.get("stat_cafes", []) if c["cafe_id"] != cafe_id]
+    _save_config(cfg)
+    return {"ok": True}
 
 
 @app.get("/api/naver_stats/lookup")

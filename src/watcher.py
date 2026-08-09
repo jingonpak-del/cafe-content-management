@@ -32,6 +32,8 @@ class Watcher:
         on_event=None,
         log=print,
         sheet_cfg: dict | None = None,
+        session_mgr=None,
+        account: str | None = None,
     ):
         self.db = db
         self.client = client
@@ -47,6 +49,14 @@ class Watcher:
         self._errors = 0
         self._last_session_check = 0.0
         self._session_check_gap = 120.0
+        # 세션 재저장 — 네이버가 굴려준 쿠키를 파일로 되쓴다.
+        # 이게 없으면 갱신분이 메모리에만 남아, 재시작하는 순간 처음 캡처한 낡은 쿠키로
+        # 되돌아간다. 실제로 그 상태였다(snowgreent 세션이 명목 만료 1.8일 경과).
+        self.session_mgr = session_mgr
+        self.account = account
+        self._last_persist = 0.0
+        self._persist_gap = 600.0
+        self._saved_fp = None
         # 시트 동기화 / 회원해석 주기 상태
         self._last_sheet_sync = 0.0
         self._sheet_sync_gap = 1800.0   # 30분마다 시트 재동기화
@@ -83,6 +93,28 @@ class Watcher:
             self.session_ok = ok
             self.log(f"  {'✓ 세션 정상' if ok else '⚠ 세션 만료'}")
             self._emit("session", {"ok": ok})
+        if ok:
+            # 로그인이 살아 있을 때만 저장한다. 죽은 뒤 저장하면 쓸모없는 쿠키로 덮어쓴다.
+            self.persist_session()
+
+    def persist_session(self):
+        """네이버가 갱신해 준 쿠키를 세션 파일에 되쓴다(10분 간격, 변화 있을 때만)."""
+        if not self.session_mgr or not self.account:
+            return
+        if (time.monotonic() - self._last_persist) < self._persist_gap:
+            return
+        self._last_persist = time.monotonic()
+        try:
+            fp = self.session_mgr.persist(self.account, self.client, prev=self._saved_fp)
+        except Exception as e:
+            self.log(f"  ! 세션 저장 실패: {e}")
+            return
+        if fp is None:
+            return          # 갱신 없음 또는 로그인 쿠키 없음 — 정상 경로
+        first = self._saved_fp is None
+        self._saved_fp = fp
+        v = self.session_mgr.verify(self.account)
+        self.log(f"  ⟳ 세션 {'저장' if first else '갱신 저장'} — {v.expiry_text}")
 
     # ── 게시글 목록 폴링 ───────────────────────────────────────────────────
 
@@ -511,4 +543,7 @@ def build_watcher(db: Database, session_dir: Path, account_id: str | None,
     if account_id and sm.verify(account_id).ok:
         cookies = sm.load_cookies(account_id)
     client = cafe_api.make_client(cookies)
+    # session_mgr/account를 넘겨야 워처가 갱신된 쿠키를 파일로 되쓴다(재시작해도 세션 유지).
+    kwargs.setdefault("session_mgr", sm)
+    kwargs.setdefault("account", account_id)
     return Watcher(db, client, targets, **kwargs)

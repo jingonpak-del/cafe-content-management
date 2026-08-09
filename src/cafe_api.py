@@ -16,11 +16,17 @@ from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
+from navercafe_core import browserenv
 
-UA = (
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-)
+# UA는 공용 코어가 단일 출처를 관리한다(아이디관리가 설치된 크롬에서 뽑아 기록).
+# 로그인은 실제 크롬으로 하고 크롤링은 여기서 HTTP로 하는데, 둘이 다른 Chrome 버전을
+# 주장하면 같은 세션이 두 개의 브라우저인 척하는 셈이 된다.
+UA = browserenv.load_ua()
+
+
+def dump_cookies(client: httpx.Client) -> list[dict[str, Any]]:
+    """네이버가 롤링 갱신한 쿠키를 CookieStore 저장 포맷으로 뽑는다(session.persist용)."""
+    return browserenv.dump_cookies(client)
 ARTICLE_LIST_URL = "https://apis.naver.com/cafe-web/cafe2/ArticleListV2.json"
 # 전체글(menu 0) 지원 — 비로그인으로도 카페 전체 최신글 조회 가능.
 BOARDLIST_URL = "https://apis.naver.com/cafe-web/cafe-boardlist-api/v1/cafes/{cafe_id}/menus/{menu_id}/articles"

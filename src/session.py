@@ -1,19 +1,28 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
+
+# 만료·지문 판정은 공용 코어로 이관됐다(navercafe_core.sessioninfo).
+# VerifyResult가 (ok, reason) 뒤에 기본값 필드를 더 갖게 되지만 기존 호출부는 그대로 동작한다.
+# 이제 세션이 며칠 남았는지(days_left)와 곧 끊기는지(expiring)를 알 수 있다.
+from navercafe_core.sessioninfo import (
+    AUTH_COOKIES,
+    EXPIRY_WARN_DAYS,
+    VerifyResult,
+    auth_expiry,
+    auth_fingerprint,
+    auth_token,
+    days_left,
+    describe as _describe,
+    has_login_cookies,
+    merge_expiry,
+)
 
 from .cookie_store import CookieStore
 from . import cafe_api
 
 NAVER_LOGIN = "https://nid.naver.com/nidlogin.login"
 NAVER_HOME = "https://www.naver.com/"
-
-
-@dataclass(frozen=True)
-class VerifyResult:
-    ok: bool
-    reason: str
 
 
 def _make_driver():
@@ -93,14 +102,37 @@ class SessionManager:
         return self.store.load(account_id).cookies
 
     def verify(self, account_id: str) -> VerifyResult:
-        """쿠키 존재 + 로그인 쿠키(NID_AUT/NID_SES) 유무만 빠르게 확인."""
+        """쿠키 존재 + 로그인 쿠키 유무 + 만료 잔여일.
+
+        `ok`의 뜻은 예전과 같다 — "쿠키를 실어서 써볼 만한가". 만료가 지났다고 False로
+        내리지 않는다(네이버는 명목 만료가 지난 쿠키도 서버 세션이 살아 있으면 받아준다).
+        만료는 `expiring`/`days_left`로 따로 알린다.
+        """
         if not self.store.exists(account_id):
             return VerifyResult(False, "저장된 세션 없음")
-        cookies = self.store.load(account_id).cookies
-        names = {c["name"] for c in cookies}
-        if "NID_AUT" not in names or "NID_SES" not in names:
-            return VerifyResult(False, "로그인 쿠키(NID_AUT/NID_SES) 없음 — 재로그인 필요")
-        return VerifyResult(True, f"쿠키 {len(cookies)}개 보유")
+        return _describe(self.store.load(account_id).cookies)
+
+    def persist(self, account_id: str, client, *, prev: str | None = None) -> str | None:
+        """네이버가 갱신한 쿠키를 세션 파일에 되쓴다.
+
+        네이버는 인증 요청을 받으면 NID_AUT의 값은 그대로 두고 만료만 +30일로 다시 민다
+        (실측). 그 갱신분이 메모리에만 남고 파일로 안 돌아가면, 프로세스를 재시작하는
+        순간 처음 캡처한 낡은 쿠키로 되돌아간다. 이 메서드가 그걸 막는다.
+
+        반환값은 저장한 지문. 저장을 건너뛴 경우(로그인 쿠키 없음 / 갱신 없음) None.
+        """
+        cookies = cafe_api.dump_cookies(client)
+        if not has_login_cookies(cookies):
+            return None          # 로그아웃 상태 쿠키로 멀쩡한 파일을 덮어쓰지 않는다
+        try:
+            cookies = merge_expiry(cookies, self.store.load(account_id).cookies)
+        except Exception:
+            pass
+        fp = auth_fingerprint(cookies)
+        if prev is not None and fp == prev:
+            return None
+        self.store.save(account_id, cookies)
+        return fp
 
     def verify_live(self, account_id: str) -> VerifyResult:
         """실제 네이버에 요청을 보내 세션이 살아있는지(만료 여부) 확인."""

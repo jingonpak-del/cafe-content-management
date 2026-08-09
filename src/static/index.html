@@ -386,6 +386,7 @@
         </select>
         <select id="sup-cafe" class="form-input" style="width:auto;padding:4px 8px"><option value="0">전체 카페</option></select>
         <button class="btn-secondary" onclick="document.getElementById('sup-bulk').style.display = document.getElementById('sup-bulk').style.display==='none'?'block':'none'">📋 여러개 일괄등록</button>
+        <button class="btn-secondary" onclick="addStatCafe()" title="크롤 안 하고 네이버 통계만 보는 카페 추가 (스탭 권한 필요)">➕ 통계전용 카페</button>
         <span id="sup-member-info" style="font-size:12px;color:#888"></span>
       </div>
       <div id="sup-bulk" style="display:none;margin-bottom:6px">
@@ -1044,12 +1045,33 @@ let supGroups = [];
 
 async function openSupporterModal() {
   document.getElementById('supporter-modal').classList.add('open');
-  // 카페 드롭다운
-  const s = await fetch('/api/stats').then(r=>r.json());
-  document.getElementById('sup-cafe').innerHTML = '<option value="0">전체 카페</option>' +
-    (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`).join('');
+  await fillSupCafeDropdown();
   setSupRange('lastmonth');
   await loadSupGroups();
+}
+
+async function fillSupCafeDropdown() {
+  const s = await fetch('/api/stats').then(r=>r.json());
+  let statCafes = [];
+  try { statCafes = await fetch('/api/supporters/stat_cafes').then(r=>r.json()); } catch(e){}
+  const opts = (s.cafe_names||[]).map(c=>`<option value="${c.cafe_id}">${esc(c.name)}</option>`)
+    .concat(statCafes.map(c=>`<option value="${c.cafe_id}">${esc(c.name)} (통계전용)</option>`));
+  document.getElementById('sup-cafe').innerHTML = '<option value="0">전체 카페</option>' + opts.join('');
+}
+
+async function addStatCafe() {
+  const cafe = prompt('통계 전용으로 추가할 카페 URL 또는 ID를 입력하세요\n(크롤은 안 하고 네이버 공식 통계만 사용. 이 계정이 스탭이어야 합니다)\n예: https://cafe.naver.com/alloneteam');
+  if (!cafe) return;
+  showToast('스탭 권한 확인 중...');
+  try {
+    const r = await fetch('/api/supporters/stat_cafes', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({cafe: cafe.trim()})
+    }).then(r=>r.json());
+    if (r.error) { showToast('⚠ '+r.error); return; }
+    showToast(`✅ 통계카페 추가: ${r.name} (${r.cafe_id})`);
+    await fillSupCafeDropdown();
+  } catch(e) { showToast('추가 실패: '+e); }
 }
 function closeSupporterModal() { document.getElementById('supporter-modal').classList.remove('open'); }
 
