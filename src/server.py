@@ -180,8 +180,10 @@ def stats():
 
 
 @app.get("/api/export")
-def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = ""):
-    """기간·카페별 게시글을 CSV(엑셀)로 스트리밍 다운로드."""
+def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = "",
+               member_key: str = "", writer_name: str = ""):
+    """기간·카페별 게시글을 CSV(엑셀)로 스트리밍 다운로드.
+    member_key 지정 시 해당 작성자의 글만 내보낸다(글관리 과거글 다운로드용)."""
     import csv, io as _io
     start_ms = end_ms = None
     try:
@@ -225,7 +227,8 @@ def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = "
             buf.write("﻿")   # 엑셀 UTF-8 인식용 BOM
             w.writerow(HEADERS)
             yield buf.getvalue(); buf.seek(0); buf.truncate(0)
-            for r in db.iter_export_rows(cafe_id or None, start_ms, end_ms, status):
+            for r in db.iter_export_rows(cafe_id or None, start_ms, end_ms, status,
+                                         member_key=member_key or None):
                 cid = r["cafe_id"]
                 masked = ""  # 개별 마스킹ID는 member_cache/company_member에 있으나 조인 생략
                 w.writerow([
@@ -249,7 +252,11 @@ def export_csv(cafe_id: int = 0, start: str = "", end: str = "", status: str = "
 
     from datetime import datetime as _dt
     cafe_tag = names.get(cafe_id, "전체") if cafe_id else "전체"
-    fname = f"cafe_export_{cafe_tag}_{start or 'all'}_{end or 'all'}.csv"
+    if member_key:
+        safe = "".join(ch for ch in (writer_name or "작성자") if ch.isalnum() or ch in " _-가-힣").strip() or "작성자"
+        fname = f"작성자_{safe}_과거글.csv"
+    else:
+        fname = f"cafe_export_{cafe_tag}_{start or 'all'}_{end or 'all'}.csv"
     from urllib.parse import quote as _q
     return StreamingResponse(
         generate(), media_type="text/csv; charset=utf-8",

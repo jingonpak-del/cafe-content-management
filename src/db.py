@@ -1040,11 +1040,13 @@ class Database:
 
     def iter_export_rows(self, cafe_id: int | None = None,
                          start_ms: int | None = None, end_ms: int | None = None,
-                         status: str = ""):
+                         status: str = "", member_key: str | None = None):
         """엑셀 내보내기용 게시글 행을 커서로 순회 (대량 스트리밍)."""
         where, params = [], []
         if cafe_id:
             where.append("cafe_id=?"); params.append(cafe_id)
+        if member_key:
+            where.append("member_key=?"); params.append(member_key)
         if start_ms is not None:
             where.append("write_ts >= ?"); params.append(start_ms)
         if end_ms is not None:

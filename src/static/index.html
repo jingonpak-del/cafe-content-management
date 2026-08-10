@@ -1766,6 +1766,7 @@ async function renderWriterArticles(w) {
       <div style="flex:1"></div>
       <span id="wr-backfill-status" style="color:#888;font-size:11px"></span>
       <button class="btn-secondary" style="padding:3px 10px;font-size:11px" onclick='backfillWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>📥 과거글 가져오기</button>
+      <button class="btn-success" style="padding:3px 10px;font-size:11px"${rows.length?'':' disabled'} onclick='exportWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>⬇ 엑셀 내려받기</button>
     </div>`;
   if (!rows.length) {
     el.innerHTML = head + '<div class="empty-msg">표시할 게시글이 없습니다<br><small style="color:#555">[과거글 가져오기]로 이 작성자의 과거 전체글을 불러올 수 있습니다</small></div>';
@@ -1796,6 +1797,16 @@ async function renderWriterArticles(w) {
         </tr>`;
       }).join('')}</tbody>
     </table>`;
+}
+
+function exportWriter(w) {
+  const qs = new URLSearchParams({
+    cafe_id: w.cafe_id,
+    member_key: w.member_key,
+    writer_name: w.nickname || '작성자',
+  });
+  // 스트리밍 CSV(본문·댓글 포함) 다운로드
+  window.location.href = '/api/export?' + qs.toString();
 }
 
 async function backfillWriter(w) {
