@@ -374,7 +374,8 @@
       <input type="number" id="sup-minimg" class="form-input" style="width:64px;padding:4px 6px" placeholder="사진≥" min="0" title="최소 사진 수">
       <input type="number" id="sup-minlen" class="form-input" style="width:70px;padding:4px 6px" placeholder="글자≥" min="0" title="최소 글자 수">
       <button class="btn-success" onclick="loadSupStats()">🔍 조회</button>
-      <button class="btn-primary" onclick="refreshSupporter()">🔄 최신값 갱신</button>
+      <button class="btn-primary" onclick="backfillSupporter()" title="그룹원 전원의 과거 전체글을 네이버에서 다시 긁어와 서버다운 등으로 누락된 글까지 채웁니다(정확도 보정). 글관리 과거글가져오기와 동일한 완전성.">📚 과거글 전체동기화</button>
+      <button class="btn-primary" onclick="refreshSupporter()" title="이미 수집된 글의 조회·좋아요·댓글·사진수만 최신화(누락글은 못 채움 → 먼저 과거글 전체동기화 권장)">🔄 최신값 갱신</button>
       <button class="btn-secondary" onclick="refreshNaverStats()" title="네이버 카페 통계도구에서 월간 공식값(삭제 포함)을 새로 가져옵니다">🏆 네이버 통계 갱신</button>
       <button class="btn-secondary" onclick="downloadSupExcel()" title="크롤 데이터 + 네이버 공식 통계를 엑셀로 저장">📥 엑셀</button>
     </div>
@@ -1353,6 +1354,26 @@ async function loadSupStats() {
     </table>`;
 }
 
+async function backfillSupporter() {
+  const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
+  if (!confirm('그룹원 전원의 과거 전체글을 네이버에서 다시 가져와 누락된 글을 채웁니다.\n(서버 다운 등으로 빠진 글까지 복구 → 정확한 통계)\n그룹원이 많거나 다작이면 수 분 걸릴 수 있습니다. 진행할까요?')) return;
+  const r = await fetch(`/api/supporters/${gid}/backfill`, {method:'POST'}).then(r=>r.json());
+  if (!r.ok) { showToast(r.message||r.error||'오류'); return; }
+  const bar = document.getElementById('sup-refresh-bar');
+  bar.style.display='block';
+  const poll = setInterval(async ()=>{
+    const s = await fetch('/api/supporters/backfill_status').then(r=>r.json());
+    bar.textContent = `📚 과거글 전체동기화 중... 그룹원 ${s.done}/${s.total}` +
+      (s.cur?` · 현재: ${s.cur}`:'') + ` · 누적 추가 ${s.added}건`;
+    if (!s.running) {
+      clearInterval(poll);
+      bar.textContent = s.error ? `⚠ ${s.error}` : `✅ 전체동기화 완료 · 누락 ${s.added}건 복구 (그룹원 ${s.done}명)`;
+      setTimeout(()=>bar.style.display='none', 6000);
+      loadSupStats();
+    }
+  }, 1500);
+}
+
 async function refreshSupporter() {
   const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
   if (!confirm('그룹원 게시글을 재크롤해 조회·좋아요·댓글·사진수를 최신화합니다. 게시글이 많으면 시간이 걸립니다. 진행할까요?')) return;
@@ -1756,47 +1777,74 @@ async function selectWriter(w) {
   await renderWriterArticles(w);
 }
 
+// 과거글 페이징 상태 (30개씩 더보기)
+let wrRows = [], wrOffset = 0, wrTotal = 0, wrHasMore = false;
+let wrExpStart = '', wrExpEnd = '';
+const WR_PAGE = 30;
+
 async function renderWriterArticles(w) {
-  const el = document.getElementById('wr-articles');
-  const d = await fetch(`/api/writers/${w.cafe_id}/${encodeURIComponent(w.member_key)}/articles?limit=2000`).then(r=>r.json());
+  wrRows = []; wrOffset = 0; wrTotal = 0; wrHasMore = false;
+  await loadMoreWriter(w, true);
+}
+
+async function loadMoreWriter(w, first) {
+  const d = await fetch(`/api/writers/${w.cafe_id}/${encodeURIComponent(w.member_key)}/articles?limit=${WR_PAGE}&offset=${wrOffset}`).then(r=>r.json());
   const rows = d.rows || [];
+  if (first && d.total != null) wrTotal = d.total;
+  wrRows = wrRows.concat(rows);
+  wrOffset += rows.length;
+  wrHasMore = !!d.has_more;
+  drawWriterArticles(w);
+}
+
+function drawWriterArticles(w) {
+  const el = document.getElementById('wr-articles');
+  const wj = JSON.stringify({cafe_id:w.cafe_id, member_key:w.member_key, nickname:w.nickname});
   const head = `
-    <div style="padding:8px 12px;font-size:12px;color:#93c5fd;border-bottom:1px solid #0f3460;display:flex;align-items:center;gap:10px">
-      <span><b>${esc(w.nickname||'')}</b> 의 게시글 ${rows.length}건</span>
+    <div style="padding:8px 12px;font-size:12px;color:#93c5fd;border-bottom:1px solid #0f3460;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span><b>${esc(w.nickname||'')}</b> 의 게시글 <b>${wrTotal}</b>건 <span style="color:#888">(표시 ${wrRows.length})</span></span>
       <div style="flex:1"></div>
       <span id="wr-backfill-status" style="color:#888;font-size:11px"></span>
-      <button class="btn-secondary" style="padding:3px 10px;font-size:11px" onclick='backfillWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>📥 과거글 가져오기</button>
-      <button class="btn-success" style="padding:3px 10px;font-size:11px"${rows.length?'':' disabled'} onclick='exportWriter(${JSON.stringify({cafe_id:w.cafe_id,member_key:w.member_key,nickname:w.nickname})})'>⬇ 엑셀 내려받기</button>
+      <span style="color:#888">엑셀기간</span>
+      <input type="date" id="wr-exp-start" value="${wrExpStart}" oninput="wrExpStart=this.value" class="form-input" style="width:auto;padding:2px 6px;font-size:11px" title="비우면 전체 기간">
+      <span style="color:#888">~</span>
+      <input type="date" id="wr-exp-end" value="${wrExpEnd}" oninput="wrExpEnd=this.value" class="form-input" style="width:auto;padding:2px 6px;font-size:11px">
+      <button class="btn-secondary" style="padding:3px 10px;font-size:11px" onclick='backfillWriter(${wj})'>📥 과거글 가져오기</button>
+      <button class="btn-success" style="padding:3px 10px;font-size:11px"${wrTotal?'':' disabled'} onclick='exportWriter(${wj})'>⬇ 엑셀 내려받기</button>
     </div>`;
-  if (!rows.length) {
+  if (!wrRows.length) {
     el.innerHTML = head + '<div class="empty-msg">표시할 게시글이 없습니다<br><small style="color:#555">[과거글 가져오기]로 이 작성자의 과거 전체글을 불러올 수 있습니다</small></div>';
     return;
   }
+  const body = wrRows.map(a=>{
+    const st = statusBadge(a);
+    const titleChg = (a.title_changed && a.title!==a.current_title)
+      ? `<div style="font-size:11px;color:#fcd34d">↳ "${esc(a.title)}" → "${esc(a.current_title)}"</div>` : '';
+    const short = a.short_url || a.url;
+    return `<tr>
+      <td>${st}</td>
+      <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
+      <td style="color:#6ee7b7">${esc(a.menu_name||'')}</td>
+      <td>${esc(a.current_title||a.title||'')}${titleChg}</td>
+      <td style="text-align:right">${fmtNum(a.cur_read)}</td>
+      <td style="text-align:right">${fmtNum(a.cur_comment)}</td>
+      <td style="text-align:right">${fmtNum(a.cur_like)}</td>
+      <td style="white-space:nowrap">
+        <a href="${a.url}" target="_blank" style="color:#4ade80;text-decoration:none">↗</a>
+        <span style="color:#7fa8d0;font-size:11px;user-select:all;cursor:text">${esc(short)}</span>
+      </td>
+    </tr>`;
+  }).join('');
+  const more = wrHasMore
+    ? `<div style="text-align:center;padding:10px"><button class="btn-secondary" onclick='loadMoreWriter(${wj})'>▼ 더보기 (${wrRows.length}/${wrTotal})</button></div>`
+    : `<div style="text-align:center;padding:8px;color:#555;font-size:11px">— 전체 ${wrTotal}건 표시 완료 —</div>`;
   el.innerHTML = head + `
     <table class="data-table">
       <thead><tr>
         <th>상태</th><th>작성일</th><th>게시판</th><th>제목</th><th>조회</th><th>댓글</th><th>♥</th><th>링크</th>
       </tr></thead>
-      <tbody>${rows.map(a=>{
-        const st = statusBadge(a);
-        const titleChg = (a.title_changed && a.title!==a.current_title)
-          ? `<div style="font-size:11px;color:#fcd34d">↳ "${esc(a.title)}" → "${esc(a.current_title)}"</div>` : '';
-        const short = a.short_url || a.url;
-        return `<tr>
-          <td>${st}</td>
-          <td style="color:#888;white-space:nowrap">${a.write_str||''}</td>
-          <td style="color:#6ee7b7">${esc(a.menu_name||'')}</td>
-          <td>${esc(a.current_title||a.title||'')}${titleChg}</td>
-          <td style="text-align:right">${fmtNum(a.cur_read)}</td>
-          <td style="text-align:right">${fmtNum(a.cur_comment)}</td>
-          <td style="text-align:right">${fmtNum(a.cur_like)}</td>
-          <td style="white-space:nowrap">
-            <a href="${a.url}" target="_blank" style="color:#4ade80;text-decoration:none">↗</a>
-            <span style="color:#7fa8d0;font-size:11px;user-select:all;cursor:text">${esc(short)}</span>
-          </td>
-        </tr>`;
-      }).join('')}</tbody>
-    </table>`;
+      <tbody>${body}</tbody>
+    </table>` + more;
 }
 
 function exportWriter(w) {
@@ -1805,6 +1853,8 @@ function exportWriter(w) {
     member_key: w.member_key,
     writer_name: w.nickname || '작성자',
   });
+  if (wrExpStart) qs.set('start', wrExpStart);
+  if (wrExpEnd) qs.set('end', wrExpEnd);
   // 스트리밍 CSV(본문·댓글 포함) 다운로드
   window.location.href = '/api/export?' + qs.toString();
 }
@@ -1819,8 +1869,8 @@ async function backfillWriter(w) {
     const s = await fetch(`/api/writers/${w.cafe_id}/${encodeURIComponent(w.member_key)}/backfill/status`).then(r=>r.json());
     const j = s.job || {};
     if (j.status === 'running') {
-      setStatus(`수집 중… ${j.done||0}건` + (j.total?` / 전체 ${j.total}`:''));
       await renderWriterArticles(w);
+      setStatus(`수집 중… ${j.done||0}건` + (j.total?` / 전체 ${j.total}`:''));
       wrBackfillPoll = setTimeout(poll, 1500);
     } else if (j.status === 'error') {
       await renderWriterArticles(w);

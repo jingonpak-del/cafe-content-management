@@ -1107,6 +1107,80 @@ def _run_sup_refresh(group_id, s, e, menu_id):
         db.close()
 
 
+# ── 서포터즈: 과거글 전체 동기화 (정확도 보정) ─────────────────────────────────
+# '최신값 갱신'은 이미 DB에 있는 글만 재크롤하므로, 서버 다운 등으로 누락된 글은
+# 영원히 안 잡힌다. 여기서는 각 그룹원의 회원 페이지 전체글을 크롤해 누락분을
+# 채워 넣는다(=글관리 과거글가져오기와 동일한 완전성).
+SUP_BACKFILL = {"running": False, "done": 0, "total": 0, "cur": "", "added": 0,
+                "group_id": None, "error": ""}
+
+
+@app.get("/api/supporters/backfill_status")
+def sup_backfill_status():
+    return SUP_BACKFILL
+
+
+@app.post("/api/supporters/{group_id}/backfill")
+async def sup_backfill(group_id: int):
+    """그룹원 전원의 과거 전체글을 네이버 회원페이지에서 크롤해 누락분을 채운다."""
+    if SUP_BACKFILL["running"]:
+        return {"ok": False, "message": "이미 동기화 중"}
+    threading.Thread(target=_run_sup_backfill, args=(group_id,), daemon=True).start()
+    return {"ok": True}
+
+
+def _run_sup_backfill(group_id):
+    from . import cafe_api
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = SESSION_MGR.load_cookies(account_id) if account_id and SESSION_MGR.verify(account_id).ok else None
+    db = Database(DB_PATH)
+    db.conn.execute("PRAGMA busy_timeout=15000")
+    SUP_BACKFILL.update(running=True, done=0, total=0, cur="", added=0,
+                        group_id=group_id, error="")
+    try:
+        members = db.get_supporter_members(group_id)
+        SUP_BACKFILL["total"] = len(members)
+        if not cookies:
+            SUP_BACKFILL["error"] = "로그인 세션 없음 — 설정에서 로그인하세요"
+            return
+        client = cafe_api.make_client(cookies)
+        try:
+            for m in members:
+                cid, mk = m["cafe_id"], m["member_key"]
+                if not mk:
+                    SUP_BACKFILL["done"] += 1
+                    continue
+                SUP_BACKFILL["cur"] = m.get("nickname") or m.get("naver_id") or str(mk)[:8]
+                seen, page = set(), 1
+                try:
+                    while page <= 700:
+                        arts, _total = cafe_api.fetch_member_articles(
+                            cid, mk, per_page=50, page=page, client=client)
+                        if not arts:
+                            break
+                        fresh = [a for a in arts if a.article_id not in seen]
+                        if not fresh:
+                            break
+                        SUP_BACKFILL["added"] += db.upsert_member_articles(fresh)
+                        for a in fresh:
+                            seen.add(a.article_id)
+                        if len(arts) < 50:
+                            break
+                        page += 1
+                        time.sleep(0.15)
+                except Exception:
+                    pass
+                SUP_BACKFILL["done"] += 1
+        finally:
+            client.close()
+    except Exception as e:
+        SUP_BACKFILL["error"] = str(e)[:200]
+    finally:
+        SUP_BACKFILL["running"] = False
+        db.close()
+
+
 @app.post("/api/companies/mapping")
 async def add_company_mapping(req: dict):
     naver_id = (req.get("naver_id") or "").strip()
@@ -1322,7 +1396,8 @@ def writer_articles(cafe_id: int, member_key: str, limit: int = 200, offset: int
             # 짧은 링크 (드래그·복사용): https://cafe.naver.com/{cafe_url}/{article_id}
             r["short_url"] = (f"https://cafe.naver.com/{cafe_url}/{r['article_id']}"
                               if cafe_url else r["url"])
-        return {"rows": rows, "has_more": len(rows) == limit}
+        total = db.count_writer_articles(cafe_id, member_key) if offset == 0 else None
+        return {"rows": rows, "has_more": len(rows) == limit, "total": total}
     finally:
         db.close()
 

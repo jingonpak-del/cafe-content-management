@@ -983,6 +983,11 @@ class Database:
             (cafe_id, member_key, limit, offset),
         ).fetchall()]
 
+    def count_writer_articles(self, cafe_id: int, member_key: str) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM articles WHERE cafe_id=? AND member_key=?",
+            (cafe_id, member_key)).fetchone()[0]
+
     def get_company_articles(self, company_name: str, start_ms: int | None = None,
                              end_ms: int | None = None, limit: int = 500, offset: int = 0) -> list:
         """특정 업체로 매칭된 게시글 리스트 (상태 포함, 작성일 최신순)."""
