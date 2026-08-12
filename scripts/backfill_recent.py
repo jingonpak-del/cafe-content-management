@@ -103,8 +103,30 @@ def backfill_cafe(db, client, cafe_id, name, floor_ms):
 
 
 def main():
-    years = float(sys.argv[1]) if len(sys.argv) > 1 else 2.0
-    floor_ms = int((time.time() - years * 365 * 86400) * 1000)
+    """인자:
+      [years]            최근 N년 (기본 2). 위치 인자(숫자).
+      --floor YYYY-MM-DD 명시적 기준일(이보다 오래되면 종료). years보다 우선.
+      --cafe CAFE_ID     특정 카페만 (여러 번 지정 가능). 없으면 전체.
+    예) python backfill_recent.py --cafe 21031223 --floor 2024-01-01
+    """
+    args = sys.argv[1:]
+    years = 2.0
+    floor_date = None
+    only_cafes = []
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--floor":
+            floor_date = args[i + 1]; i += 2; continue
+        if a == "--cafe":
+            only_cafes.append(int(args[i + 1])); i += 2; continue
+        if a.replace(".", "").isdigit():
+            years = float(a)
+        i += 1
+    if floor_date:
+        floor_ms = int(datetime.datetime.strptime(floor_date, "%Y-%m-%d").timestamp() * 1000)
+    else:
+        floor_ms = int((time.time() - years * 365 * 86400) * 1000)
     sm = SessionManager(ROOT / "data" / "sessions")
     import json
     cfg = json.load(open(ROOT / "config" / "settings.json", encoding="utf-8"))
@@ -115,9 +137,9 @@ def main():
     db = Database(str(ROOT / "data" / "gamsi.db"))
     db.conn.execute("PRAGMA busy_timeout=20000")
     names = {c["cafe_id"]: c.get("name", str(c["cafe_id"])) for c in cfg.get("cafes", [])}
-    log(f"=== 최근 {years}년치 과거글 백필 시작 (floor {datetime.datetime.fromtimestamp(floor_ms/1000):%Y-%m-%d}) ===")
-    for c in cfg.get("cafes", []):
-        cid = c["cafe_id"]
+    cafes = only_cafes or [c["cafe_id"] for c in cfg.get("cafes", [])]
+    log(f"=== 과거글 백필 시작 (floor {datetime.datetime.fromtimestamp(floor_ms/1000):%Y-%m-%d}, 카페 {cafes}) ===")
+    for cid in cafes:
         try:
             backfill_cafe(db, client, cid, names.get(cid, str(cid)), floor_ms)
         except Exception as e:
