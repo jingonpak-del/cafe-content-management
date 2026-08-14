@@ -26,3 +26,8 @@ test_*.py
 __pycache__/
 *.pyc
 *.pyo
+
+# 로컬 전용 (추적 제외)
+.mcp.json
+scratch_*.sh
+scratch_*.js
