@@ -287,6 +287,8 @@ class Database:
                           ("deleted_at", "INTEGER"), ("flag_ts", "INTEGER"),
                           ("norm_title", "TEXT"), ("is_duplicate", "INTEGER DEFAULT 0"),
                           ("dup_count", "INTEGER DEFAULT 0"), ("content_hash", "TEXT"),
+                          ("dup_rep", "INTEGER DEFAULT 1"),  # 중복그룹 대표(최신)=1, 나머지=0
+
                           ("delete_type", "TEXT"),          # staff | self | NULL(미정)
                           ("deleted_by_nick", "TEXT"), ("deleted_by_tag", "TEXT"),
                           ("deleted_by_id", "TEXT"),
@@ -294,6 +296,19 @@ class Database:
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {decl}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dup ON articles (cafe_id, member_key, content_hash)")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dupgrp ON articles (cafe_id, member_key, content_hash, write_ts)")
+        # 카페+작성자 단위 중복 대표 계산용 (계정당 최신 1건)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_memwt ON articles (cafe_id, member_key, write_ts, article_id)")
+        # 이상감지 여부 생성컬럼(제목변경|삭제|키워드|중복) — 우측 패널 조회를 O(전체스캔)에서
+        # 인덱스 조회로 전환(중복 폭증 시 상관 서브쿼리로 멈추던 문제 근본 해결).
+        try:
+            self.conn.execute(
+                "ALTER TABLE articles ADD COLUMN is_flagged AS "
+                "(CASE WHEN title_changed=1 OR status='deleted' OR has_keyword_hit=1 "
+                "OR is_duplicate=1 THEN 1 ELSE 0 END) VIRTUAL")
+        except Exception:
+            pass  # 이미 존재
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_is_flagged ON articles (is_flagged, reviewed)")
         # 작성자 그룹: 기존 watched_writer 에 group_id 추가
         ww_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(watched_writer)")}
         if "group_id" not in ww_cols:
@@ -373,6 +388,20 @@ class Database:
                      AND b.content_hash=articles.content_hash) >= 2"""
         )
         self.conn.commit()
+        # 3) 대표(최신) 사전계산: 같은 카페의 '같은 작성자'가 올린 중복글은 하나로 묶어
+        #    가장 최근(write_ts, 동점은 article_id) 1건만 dup_rep=1. 나머지는 우측 패널에서 숨김.
+        #    (한 계정이 도배한 여러 중복글 중 최신 1건만 감시대상으로 노출 → 계정당 1줄)
+        self.conn.execute("UPDATE articles SET dup_rep=1")
+        self.conn.execute(
+            """UPDATE articles SET dup_rep=0
+               WHERE is_duplicate=1 AND EXISTS (
+                   SELECT 1 FROM articles b
+                   WHERE b.cafe_id=articles.cafe_id AND b.member_key=articles.member_key
+                     AND b.is_duplicate=1
+                     AND (b.write_ts > articles.write_ts
+                          OR (b.write_ts = articles.write_ts AND b.article_id > articles.article_id)))"""
+        )
+        self.conn.commit()
         dup = self.conn.execute("SELECT COUNT(*) FROM articles WHERE is_duplicate=1").fetchone()[0]
         return {"hash_filled": filled, "duplicates": dup}
 
@@ -392,6 +421,21 @@ class Database:
                    WHERE cafe_id=? AND member_key=? AND content_hash=?""",
                 (n, now_ms(), cafe_id, member_key, chash),
             )
+            # 대표 재계산: 같은 카페+작성자의 중복글 전체에서 가장 최근 1건만 dup_rep=1.
+            # 한 계정이 도배한 여러 중복글은 우측 패널에 최신 1건만 노출한다(계정당 1줄).
+            self.conn.execute(
+                "UPDATE articles SET dup_rep=0 WHERE cafe_id=? AND member_key=? AND is_duplicate=1",
+                (cafe_id, member_key))
+            self.conn.execute(
+                """UPDATE articles SET dup_rep=1
+                   WHERE cafe_id=? AND member_key=? AND is_duplicate=1
+                     AND NOT EXISTS (
+                         SELECT 1 FROM articles b
+                         WHERE b.cafe_id=articles.cafe_id AND b.member_key=articles.member_key
+                           AND b.is_duplicate=1
+                           AND (b.write_ts > articles.write_ts
+                                OR (b.write_ts = articles.write_ts AND b.article_id > articles.article_id)))""",
+                (cafe_id, member_key))
 
     def upsert_body_as_article(self, cafe_id: int, article_id: int, body) -> bool:
         """번호 역순 과거수집용: 본문(ArticleBody)만으로 게시글 레코드 생성.
@@ -1106,7 +1150,8 @@ class Database:
         """이상 감지 게시글: title_changed | deleted | keyword | duplicate | all.
         스탭삭제(delete_type='staff')된 글은 이미 관리자가 조치한 것이므로 우측 패널에서 제외.
         search: 제목/현재제목/작성자닉/멤버태그/네이버ID/본문에서 검색."""
-        where = ["COALESCE(a.delete_type,'') != 'staff'"]   # 스탭삭제 숨김 (기록은 보존)
+        # is_flagged(생성컬럼)=1 을 항상 걸어 idx_is_flagged 를 태운다(전체 스캔 방지).
+        where = ["a.is_flagged=1", "COALESCE(a.delete_type,'') != 'staff'"]  # 스탭삭제 숨김
         params: list = []
         if flag_type == "title_changed":
             where.append("a.title_changed=1")
@@ -1116,8 +1161,6 @@ class Database:
             where.append("a.has_keyword_hit=1")
         elif flag_type == "duplicate":
             where.append("a.is_duplicate=1")
-        else:
-            where.append("(a.title_changed=1 OR a.status='deleted' OR a.has_keyword_hit=1 OR a.is_duplicate=1)")
         if cafe_id:
             where.append("a.cafe_id=?"); params.append(cafe_id)
         if search:
@@ -1126,13 +1169,12 @@ class Database:
                              OR a.member_tag LIKE ? OR a.naver_id LIKE ? OR a.content_text LIKE ?)""")
             params += [like, like, like, like, like, like]
 
-        # 중복(도배)글은 같은 그룹(작성자+본문)에서 '가장 최근 1개'만 노출.
-        # 단, 검색 중일 때는 특정 글을 찾는 목적이므로 전부 노출.
+        # 중복(도배)글은 같은 그룹(작성자+본문)에서 '가장 최근 1개'(대표=dup_rep)만 노출.
+        # 대표 여부는 _mark_duplicates/backfill_duplicates 에서 미리 계산해 둠(조회 시 상관
+        # 서브쿼리를 돌리면 중복이 많을 때 O(n^2)로 멈추므로 컬럼으로 사전계산).
+        # 검색 중일 때는 특정 글을 찾는 목적이므로 전부 노출.
         if not search:
-            where.append("""(a.is_duplicate=0 OR a.write_ts = (
-                SELECT MAX(b.write_ts) FROM articles b
-                WHERE b.cafe_id=a.cafe_id AND b.member_key=a.member_key
-                  AND b.content_hash=a.content_hash))""")
+            where.append("(a.is_duplicate=0 OR a.dup_rep=1)")
 
         sql = f"""SELECT a.*,
                         GROUP_CONCAT(DISTINCT h.keyword_text) AS hit_keywords
@@ -1454,7 +1496,8 @@ class Database:
             "deleted_staff":c("SELECT COUNT(*) FROM articles WHERE delete_type='staff'").fetchone()[0],
             "title_changed":c("SELECT COUNT(*) FROM articles WHERE title_changed=1").fetchone()[0],
             "keyword_hit":  c("SELECT COUNT(*) FROM articles WHERE has_keyword_hit=1").fetchone()[0],
-            "duplicate":    c("SELECT COUNT(*) FROM articles WHERE is_duplicate=1").fetchone()[0],
+            # 우측 중복 탭 배지: 실제 표시되는 대표(계정당 최신 1건)만 카운트
+            "duplicate":    c("SELECT COUNT(*) FROM articles WHERE is_duplicate=1 AND dup_rep=1").fetchone()[0],
             "with_company": c("SELECT COUNT(*) FROM articles WHERE company_name IS NOT NULL AND company_name!=''").fetchone()[0],
             "keywords":     c("SELECT COUNT(*) FROM keywords WHERE is_active=1").fetchone()[0],
             "companies":    c("SELECT COUNT(DISTINCT company_name) FROM company_master").fetchone()[0],

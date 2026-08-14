@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "db-gamsi": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@mokei/mcp-sqlite", "--db", "C:/Users/USER/게시글감시/data/gamsi.db"]
+    }
+  }
+}
