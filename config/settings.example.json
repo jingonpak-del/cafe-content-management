@@ -12,5 +12,9 @@
   "sheet": {
     "spreadsheet_id": "구글시트_스프레드시트_ID",
     "gid": "시트탭_gid"
+  },
+  "naver_openapi": {
+    "client_id": "developers.naver.com에서 발급받은 Client ID",
+    "client_secret": "developers.naver.com에서 발급받은 Client Secret"
   }
 }
