@@ -1,0 +1,902 @@
+[
+  {
+    "id": 1309,
+    "valid": true,
+    "subcategory": "베이커리/디저트"
+  },
+  {
+    "id": 1310,
+    "valid": true,
+    "subcategory": "해물"
+  },
+  {
+    "id": 1314,
+    "valid": true,
+    "subcategory": "국수"
+  },
+  {
+    "id": 1319,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1329,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1337,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1339,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1348,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1350,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1357,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1360,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1361,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1365,
+    "valid": true,
+    "subcategory": "국밥/해장"
+  },
+  {
+    "id": 1368,
+    "valid": true,
+    "subcategory": "순두부"
+  },
+  {
+    "id": 1372,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1377,
+    "valid": true,
+    "subcategory": "샤브샤브"
+  },
+  {
+    "id": 1380,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1381,
+    "valid": true,
+    "subcategory": "한정식/백반"
+  },
+  {
+    "id": 1385,
+    "valid": true,
+    "subcategory": "순두부"
+  },
+  {
+    "id": 1394,
+    "valid": true,
+    "subcategory": "치킨"
+  },
+  {
+    "id": 1400,
+    "valid": true,
+    "subcategory": "치킨"
+  },
+  {
+    "id": 1405,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1407,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1408,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1410,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1437,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1441,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1447,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1452,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1457,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1463,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1465,
+    "valid": true,
+    "subcategory": "베이커리/디저트"
+  },
+  {
+    "id": 1466,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1467,
+    "valid": true,
+    "subcategory": "한정식/백반"
+  },
+  {
+    "id": 1514,
+    "valid": true,
+    "subcategory": "도시락/반찬"
+  },
+  {
+    "id": 1516,
+    "valid": true,
+    "subcategory": "베이커리/디저트"
+  },
+  {
+    "id": 1520,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1526,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1530,
+    "valid": true,
+    "subcategory": "샤브샤브"
+  },
+  {
+    "id": 1536,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1543,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1545,
+    "valid": true,
+    "subcategory": "양식"
+  },
+  {
+    "id": 1555,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1559,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1561,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1563,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1564,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1566,
+    "valid": true,
+    "subcategory": "한정식/백반"
+  },
+  {
+    "id": 1572,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1579,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1583,
+    "valid": true,
+    "subcategory": "디저트카페"
+  },
+  {
+    "id": 1589,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1592,
+    "valid": true,
+    "subcategory": "국수"
+  },
+  {
+    "id": 1593,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1599,
+    "valid": true,
+    "subcategory": "디저트카페"
+  },
+  {
+    "id": 1602,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1608,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1612,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1620,
+    "valid": true,
+    "subcategory": "국수"
+  },
+  {
+    "id": 1633,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1638,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1641,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1645,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1649,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1650,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1657,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1659,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1663,
+    "valid": true,
+    "subcategory": "해물"
+  },
+  {
+    "id": 1668,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1669,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1677,
+    "valid": true,
+    "subcategory": "디저트카페"
+  },
+  {
+    "id": 1678,
+    "valid": true,
+    "subcategory": "한정식/백반"
+  },
+  {
+    "id": 1679,
+    "valid": true,
+    "subcategory": "순두부"
+  },
+  {
+    "id": 1683,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1686,
+    "valid": true,
+    "subcategory": "일식/스시"
+  },
+  {
+    "id": 1688,
+    "valid": true,
+    "subcategory": "해물"
+  },
+  {
+    "id": 1697,
+    "valid": true,
+    "subcategory": "순두부"
+  },
+  {
+    "id": 1701,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1703,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1704,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1705,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1713,
+    "valid": true,
+    "subcategory": "치킨"
+  },
+  {
+    "id": 1716,
+    "valid": true,
+    "subcategory": "해물"
+  },
+  {
+    "id": 1718,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1720,
+    "valid": true,
+    "subcategory": "국밥/해장"
+  },
+  {
+    "id": 1723,
+    "valid": true,
+    "subcategory": "국밥/해장"
+  },
+  {
+    "id": 1730,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1732,
+    "valid": true,
+    "subcategory": "국수"
+  },
+  {
+    "id": 1740,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1742,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1746,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1752,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1755,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1757,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1758,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 1759,
+    "valid": true,
+    "subcategory": "순두부"
+  },
+  {
+    "id": 1763,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1764,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1765,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1774,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1784,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1793,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1800,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1802,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1805,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1807,
+    "valid": true,
+    "subcategory": "샤브샤브"
+  },
+  {
+    "id": 1811,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1813,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1818,
+    "valid": true,
+    "subcategory": "샤브샤브"
+  },
+  {
+    "id": 1822,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1826,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1831,
+    "valid": true,
+    "subcategory": "한정식/백반"
+  },
+  {
+    "id": 1838,
+    "valid": true,
+    "subcategory": "해물"
+  },
+  {
+    "id": 1842,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1844,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1849,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1851,
+    "valid": true,
+    "subcategory": "국밥/해장"
+  },
+  {
+    "id": 1852,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1862,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1866,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1867,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1875,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1878,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1881,
+    "valid": true,
+    "subcategory": "치킨"
+  },
+  {
+    "id": 1882,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 1886,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1888,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1899,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1909,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1911,
+    "valid": true,
+    "subcategory": "한정식/백반"
+  },
+  {
+    "id": 1912,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1920,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1921,
+    "valid": true,
+    "subcategory": "순두부"
+  },
+  {
+    "id": 1926,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1929,
+    "valid": true,
+    "subcategory": "샤브샤브"
+  },
+  {
+    "id": 1933,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1936,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 1940,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1941,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1947,
+    "valid": true,
+    "subcategory": "국수"
+  },
+  {
+    "id": 1949,
+    "valid": true,
+    "subcategory": "중식"
+  },
+  {
+    "id": 1950,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1958,
+    "valid": true,
+    "subcategory": "샤브샤브"
+  },
+  {
+    "id": 1962,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 1966,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1977,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 1978,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1981,
+    "valid": true,
+    "subcategory": "도시락/반찬"
+  },
+  {
+    "id": 1982,
+    "valid": true,
+    "subcategory": "국밥/해장"
+  },
+  {
+    "id": 1986,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1994,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 1995,
+    "valid": true,
+    "subcategory": "베이커리/디저트"
+  },
+  {
+    "id": 1996,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2000,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2002,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2003,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2008,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2014,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 2015,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 2016,
+    "valid": true,
+    "subcategory": "횟집/해산물"
+  },
+  {
+    "id": 2017,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 2018,
+    "valid": true,
+    "subcategory": "카페"
+  },
+  {
+    "id": 2021,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 2032,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 2033,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2034,
+    "valid": true,
+    "subcategory": "국수"
+  },
+  {
+    "id": 2035,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2039,
+    "valid": true,
+    "subcategory": "떡집"
+  },
+  {
+    "id": 2044,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2046,
+    "valid": true,
+    "subcategory": "해물"
+  },
+  {
+    "id": 2048,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2049,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2052,
+    "valid": true,
+    "subcategory": "디저트카페"
+  },
+  {
+    "id": 2054,
+    "valid": true,
+    "subcategory": "분식"
+  },
+  {
+    "id": 2056,
+    "valid": true,
+    "subcategory": "고기/구이"
+  },
+  {
+    "id": 2059,
+    "valid": false,
+    "subcategory": null
+  },
+  {
+    "id": 2064,
+    "valid": true,
+    "subcategory": "기타음식점"
+  },
+  {
+    "id": 2065,
+    "valid": true,
+    "subcategory": "국밥/해장"
+  },
+  {
+    "id": 2066,
+    "valid": true,
+    "subcategory": "술집"
+  },
+  {
+    "id": 2067,
+    "valid": true,
+    "subcategory": "술집"
+  }
+]

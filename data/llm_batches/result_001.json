@@ -1,0 +1,902 @@
+[
+{
+"id": 637,
+"valid": true,
+"subcategory": "카페"
+},
+{
+"id": 640,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 646,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 648,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 650,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 654,
+"valid": true,
+"subcategory": "삼계탕"
+},
+{
+"id": 657,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 658,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 663,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 664,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 665,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 666,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 670,
+"valid": true,
+"subcategory": "장어"
+},
+{
+"id": 674,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 676,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 680,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 682,
+"valid": true,
+"subcategory": "술집"
+},
+{
+"id": 686,
+"valid": true,
+"subcategory": "태국음식"
+},
+{
+"id": 687,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 688,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 689,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 692,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 696,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 698,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 704,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 706,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 708,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 709,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 711,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 712,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 714,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 716,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 718,
+"valid": true,
+"subcategory": "양식"
+},
+{
+"id": 722,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 724,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 726,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 731,
+"valid": true,
+"subcategory": "카페"
+},
+{
+"id": 738,
+"valid": true,
+"subcategory": "도시락/반찬"
+},
+{
+"id": 740,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 744,
+"valid": true,
+"subcategory": "디저트카페"
+},
+{
+"id": 745,
+"valid": true,
+"subcategory": "중식"
+},
+{
+"id": 748,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 750,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 751,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 755,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 762,
+"valid": true,
+"subcategory": "술집"
+},
+{
+"id": 764,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 779,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 782,
+"valid": true,
+"subcategory": "삼계탕"
+},
+{
+"id": 783,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 785,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 791,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 792,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 794,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 801,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 806,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 807,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 814,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 815,
+"valid": true,
+"subcategory": "일식/스시"
+},
+{
+"id": 818,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 821,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 824,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 825,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 827,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 828,
+"valid": true,
+"subcategory": "돈까스"
+},
+{
+"id": 829,
+"valid": true,
+"subcategory": "디저트카페"
+},
+{
+"id": 837,
+"valid": true,
+"subcategory": "디저트카페"
+},
+{
+"id": 839,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 840,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 842,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 846,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 847,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 848,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 852,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 854,
+"valid": true,
+"subcategory": "도시락/반찬"
+},
+{
+"id": 868,
+"valid": true,
+"subcategory": "술집"
+},
+{
+"id": 870,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 872,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 876,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 877,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 882,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 884,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 887,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 893,
+"valid": true,
+"subcategory": "백숙"
+},
+{
+"id": 896,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 914,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 923,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 924,
+"valid": true,
+"subcategory": "떡집"
+},
+{
+"id": 926,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 927,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 931,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 935,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 936,
+"valid": true,
+"subcategory": "국밥/해장"
+},
+{
+"id": 941,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 947,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 952,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 954,
+"valid": true,
+"subcategory": "양식"
+},
+{
+"id": 958,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 974,
+"valid": true,
+"subcategory": "삼계탕"
+},
+{
+"id": 980,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 997,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1004,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1012,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 1013,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 1014,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1015,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1018,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1022,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1025,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 1033,
+"valid": true,
+"subcategory": "떡집"
+},
+{
+"id": 1043,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 1044,
+"valid": true,
+"subcategory": "횟집/해산물"
+},
+{
+"id": 1049,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 1051,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 1053,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1054,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1056,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1060,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1065,
+"valid": true,
+"subcategory": "횟집/해산물"
+},
+{
+"id": 1072,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 1076,
+"valid": true,
+"subcategory": "디저트카페"
+},
+{
+"id": 1081,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 1082,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 1084,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1085,
+"valid": true,
+"subcategory": "국수"
+},
+{
+"id": 1087,
+"valid": true,
+"subcategory": "기타음식점"
+},
+{
+"id": 1089,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1091,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1096,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1099,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1100,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1105,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1106,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 1115,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 1118,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1127,
+"valid": true,
+"subcategory": "횟집/해산물"
+},
+{
+"id": 1129,
+"valid": true,
+"subcategory": "오리요리"
+},
+{
+"id": 1133,
+"valid": true,
+"subcategory": "샤브샤브"
+},
+{
+"id": 1137,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 1138,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1140,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1146,
+"valid": true,
+"subcategory": "야식"
+},
+{
+"id": 1151,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 1152,
+"valid": true,
+"subcategory": "디저트카페"
+},
+{
+"id": 1163,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1170,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1171,
+"valid": true,
+"subcategory": "치킨"
+},
+{
+"id": 1174,
+"valid": true,
+"subcategory": "국밥/해장"
+},
+{
+"id": 1176,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1181,
+"valid": true,
+"subcategory": "디저트카페"
+},
+{
+"id": 1182,
+"valid": true,
+"subcategory": "국밥/해장"
+},
+{
+"id": 1185,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1187,
+"valid": true,
+"subcategory": "오리요리"
+},
+{
+"id": 1198,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1202,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1210,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1218,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 1222,
+"valid": true,
+"subcategory": "장어"
+},
+{
+"id": 1225,
+"valid": true,
+"subcategory": "횟집/해산물"
+},
+{
+"id": 1229,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1231,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1232,
+"valid": true,
+"subcategory": "고기/구이"
+},
+{
+"id": 1241,
+"valid": true,
+"subcategory": "치킨"
+},
+{
+"id": 1242,
+"valid": true,
+"subcategory": "부대찌개"
+},
+{
+"id": 1243,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1251,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 1257,
+"valid": true,
+"subcategory": "해물"
+},
+{
+"id": 1264,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1267,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1269,
+"valid": true,
+"subcategory": "한정식/백반"
+},
+{
+"id": 1278,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1281,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1285,
+"valid": true,
+"subcategory": "오리요리"
+},
+{
+"id": 1286,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1287,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1293,
+"valid": true,
+"subcategory": "베이커리/디저트"
+},
+{
+"id": 1294,
+"valid": false,
+"subcategory": null
+},
+{
+"id": 1298,
+"valid": true,
+"subcategory": "분식"
+},
+{
+"id": 1305,
+"valid": true,
+"subcategory": "곱창/막창"
+},
+{
+"id": 1308,
+"valid": true,
+"subcategory": "고기/구이"
+}
+]

@@ -34,7 +34,7 @@ def build(db):
     rows = db.execute(
         """SELECT category, subcategory, raw_name, region, sigungu, address,
                   write_ts, cur_read, cur_comment, promo_flag
-           FROM place_mention""").fetchall()
+           FROM place_mention WHERE category IS NOT NULL""").fetchall()
     agg = {}
     for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo in rows:
         name = normalize_name(raw)
