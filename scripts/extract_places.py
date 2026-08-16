@@ -33,6 +33,10 @@ NAME_BLACKLIST = re.compile(
 # 이모지 데코 홍보성 제목(!\s+... 또는 다중 이모지)은 광고 템플릿일 가능성 높음 — 별도 플래그
 PROMO_DECO = re.compile(r"^[!.]\s|[\U0001F300-\U0001FAFF].*[\U0001F300-\U0001FAFF]")
 
+# "초기 글"(진짜 개인 후기) 판별은 단어매칭이 아니라 작성빈도로 한다: 한 계정이
+# 서로 다른 업체를 몇 곳이나 리뷰했는지 — 많으면(예:5곳+) 전문 후기/광고성 계정으로 간주.
+GENUINE_MAX_DISTINCT_PLACES = 5
+
 # 음식종류(소분류) 키워드 규칙 — 제목+본문 텍스트에서 매칭
 SUBCATEGORY_RULES = [
     (r"갈비|고기집|삼겹|목살|양꼬치|숯불|구이", "고기/구이"),
@@ -75,10 +79,14 @@ def schema(db):
         region TEXT,                                   -- 지역 필드(동네 힌트)
         sigungu TEXT, address TEXT,
         title TEXT, write_ts INT, cur_read INT, cur_comment INT,
-        method TEXT,                                   -- template|address|title
+        method TEXT,                                   -- template|address|title|comment
         snippet TEXT,
         promo_flag INT DEFAULT 0,                       -- 이모지데코 등 광고성 의심
-        UNIQUE(cafe_id, article_id, raw_name)
+        genuine INT DEFAULT 1,                          -- 개인서술 있음(실제후기)=1, 정보나열형=0
+        author_member_key TEXT, author_level TEXT,      -- 작성자(댓글weighting과 동일 체계)
+        comment_id INT DEFAULT 0,                       -- source='comment'일 때만 사용
+        level_weight REAL DEFAULT 1.0,                  -- 작성자 등급 가중치(댓글 추천에 적용)
+        UNIQUE(cafe_id, article_id, source, comment_id, raw_name)
     );
     CREATE INDEX IF NOT EXISTS ix_pm_name ON place_mention(raw_name);
     CREATE INDEX IF NOT EXISTS ix_pm_sig ON place_mention(sigungu);
@@ -129,7 +137,8 @@ def main():
     db = sqlite3.connect(str(DST))
     schema(db)
     # 후보: 맛집 관련 + (템플릿필드 or 주소 or 제목에 맛집)
-    q = """SELECT cafe_id, article_id, title, content_text, write_ts, cur_read, cur_comment
+    q = """SELECT cafe_id, article_id, title, content_text, write_ts, cur_read, cur_comment,
+                  member_key, member_level, company_name
            FROM articles
            WHERE content_text IS NOT NULL AND length(content_text)>30
              AND ( content_text LIKE '%업체명 :%' OR content_text LIKE '%경상남도 %'
@@ -146,18 +155,35 @@ def main():
         snip = clean(r["content_text"])[:180]
         subcat = guess_subcategory((r["title"] or "") + " " + (r["content_text"] or ""))
         promo = 1 if PROMO_DECO.search(name) or PROMO_DECO.search(r["title"] or "") else 0
+        # 광고주 계정(등록업체/기관) 작성글은 홍보성으로 간주
+        if r["company_name"] or r["member_level"] == "상생업체/기관":
+            promo = 1
         try:
             db.execute(
                 """INSERT OR IGNORE INTO place_mention
                    (cafe_id,article_id,source,category,subcategory,raw_name,region,sigungu,address,
-                    title,write_ts,cur_read,cur_comment,method,snippet,promo_flag)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    title,write_ts,cur_read,cur_comment,method,snippet,promo_flag,genuine,
+                    author_member_key,author_level)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?)""",
                 (r["cafe_id"], r["article_id"], "body", "맛집", subcat, name, region, sigungu,
-                 address, r["title"], r["write_ts"], r["cur_read"], r["cur_comment"], method, snip, promo))
+                 address, r["title"], r["write_ts"], r["cur_read"], r["cur_comment"], method, snip, promo,
+                 r["member_key"], r["member_level"]))
             ins += db.total_changes and 1 or 0
         except Exception:
             pass
     db.commit()
+    # 작성빈도 기반 "초기 글" 판별: 서로 다른 업체를 GENUINE_MAX_DISTINCT_PLACES곳 넘게
+    # 리뷰한 계정은 전문 후기/광고성 계정으로 보고 genuine=0 처리.
+    heavy = db.execute(
+        """SELECT author_member_key FROM place_mention
+           WHERE source='body' AND author_member_key IS NOT NULL AND author_member_key!=''
+           GROUP BY author_member_key
+           HAVING COUNT(DISTINCT raw_name) > ?""", (GENUINE_MAX_DISTINCT_PLACES,)).fetchall()
+    heavy_keys = [h[0] for h in heavy]
+    for mk in heavy_keys:
+        db.execute("UPDATE place_mention SET genuine=0 WHERE author_member_key=?", (mk,))
+    db.commit()
+    print(f"전문후기/광고성 계정(서로다른업체>{GENUINE_MAX_DISTINCT_PLACES}) {len(heavy_keys)}명 → 해당 게시글 genuine=0 처리")
     total = db.execute("SELECT COUNT(*) FROM place_mention").fetchone()[0]
     print(f"후보 {n:,}건 스캔 → place_mention {total:,}건 적재")
 
