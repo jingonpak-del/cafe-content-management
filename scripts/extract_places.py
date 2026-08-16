@@ -23,6 +23,46 @@ F_REGION = re.compile(r"지역\s*[:：]\s*([^\n\r]{1,30})")
 # 제목 패턴: "<지역> 맛집 <업체명>"  또는 "<지역> <업체명> 맛집"
 T_MATJIP = re.compile(r"(.+?)\s*맛집\s*(.+)")
 
+# 상호가 아닌 것(질문형 문구·템플릿 라벨·감탄사·문장파편)을 걸러내는 블랙리스트
+NAME_BLACKLIST = re.compile(
+    r"(추천|알려주세요|있나요|있을까요|해주세요|부탁|궁금|어디로|가시나요|"
+    r"업체위치|편집바|장소\s*클릭|이벤트|댓글|말고|찾아요|찾습니다|줌슐랭|리스트|"
+    r"^이에요|^이예요|^소개|^다녀왔|^\?+$|^ㅎ+$|^ㅋ+$|"
+    r"(어요|네요|아요|해요|왔어요|봤어요|드려요)[!.]*$)"
+)
+# 이모지 데코 홍보성 제목(!\s+... 또는 다중 이모지)은 광고 템플릿일 가능성 높음 — 별도 플래그
+PROMO_DECO = re.compile(r"^[!.]\s|[\U0001F300-\U0001FAFF].*[\U0001F300-\U0001FAFF]")
+
+# 음식종류(소분류) 키워드 규칙 — 제목+본문 텍스트에서 매칭
+SUBCATEGORY_RULES = [
+    (r"갈비|고기집|삼겹|목살|양꼬치|숯불|구이", "고기/구이"),
+    (r"횟집|물회|회덮밥|\b회\b", "횟집/해산물"),
+    (r"해물찜|아구찜|물총|조개", "해물"),
+    (r"국수|칼국수|냉면", "국수"),
+    (r"국밥|순대국|해장국", "국밥/해장"),
+    (r"추어탕", "추어탕"),
+    (r"스시|초밥|사시미", "일식/스시"),
+    (r"짬뽕|짜장|중화|중국집", "중식"),
+    (r"돈까스|카츠", "돈까스"),
+    (r"파스타|피자|스테이크|양식", "양식"),
+    (r"브런치|샐러드", "브런치"),
+    (r"베이커리|빵집|디저트|케이크", "베이커리/디저트"),
+    (r"카페|커피|라떼", "카페"),
+    (r"한정식|반상|백반|정식", "한정식/백반"),
+    (r"곱창|막창|양대창", "곱창/막창"),
+    (r"족발|보쌈", "족발/보쌈"),
+    (r"마라탕|양꼬치", "중화요리"),
+    (r"분식|떡볶이", "분식"),
+    (r"치킨", "치킨"),
+]
+
+
+def guess_subcategory(text):
+    for pat, cat in SUBCATEGORY_RULES:
+        if re.search(pat, text):
+            return cat
+    return None
+
 
 def schema(db):
     db.executescript("""
@@ -30,12 +70,14 @@ def schema(db):
         id INTEGER PRIMARY KEY,
         cafe_id INT, article_id INT, source TEXT,     -- body|comment
         category TEXT,                                 -- 맛집 (확장: 술집/세탁소…)
+        subcategory TEXT,                               -- 음식종류 등 소분류
         raw_name TEXT,                                 -- 추출 상호
         region TEXT,                                   -- 지역 필드(동네 힌트)
         sigungu TEXT, address TEXT,
         title TEXT, write_ts INT, cur_read INT, cur_comment INT,
         method TEXT,                                   -- template|address|title
         snippet TEXT,
+        promo_flag INT DEFAULT 0,                       -- 이모지데코 등 광고성 의심
         UNIQUE(cafe_id, article_id, raw_name)
     );
     CREATE INDEX IF NOT EXISTS ix_pm_name ON place_mention(raw_name);
@@ -75,6 +117,8 @@ def extract_one(title, body):
             method = method or "title"
     if not name:
         return None
+    if NAME_BLACKLIST.search(name):
+        return None
     if not method:
         method = "address" if address else "title"
     return name, region, sigungu, address, method
@@ -100,14 +144,16 @@ def main():
         if not name or len(name) < 2 or len(name) > 40:
             continue
         snip = clean(r["content_text"])[:180]
+        subcat = guess_subcategory((r["title"] or "") + " " + (r["content_text"] or ""))
+        promo = 1 if PROMO_DECO.search(name) or PROMO_DECO.search(r["title"] or "") else 0
         try:
             db.execute(
                 """INSERT OR IGNORE INTO place_mention
-                   (cafe_id,article_id,source,category,raw_name,region,sigungu,address,
-                    title,write_ts,cur_read,cur_comment,method,snippet)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (r["cafe_id"], r["article_id"], "body", "맛집", name, region, sigungu,
-                 address, r["title"], r["write_ts"], r["cur_read"], r["cur_comment"], method, snip))
+                   (cafe_id,article_id,source,category,subcategory,raw_name,region,sigungu,address,
+                    title,write_ts,cur_read,cur_comment,method,snippet,promo_flag)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (r["cafe_id"], r["article_id"], "body", "맛집", subcat, name, region, sigungu,
+                 address, r["title"], r["write_ts"], r["cur_read"], r["cur_comment"], method, snip, promo))
             ins += db.total_changes and 1 or 0
         except Exception:
             pass
