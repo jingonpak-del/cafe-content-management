@@ -73,10 +73,12 @@ def report(db, min_mentions=2, top_n=15):
     sigungus = [r[0] for r in db.execute(
         "SELECT DISTINCT sigungu FROM place WHERE sigungu IS NOT NULL AND sigungu!='' "
         "ORDER BY sigungu")]
+    promo_excluded = db.execute("SELECT COUNT(*) FROM place WHERE promo_flag=1").fetchone()[0]
+    lines.append(f"(광고의심 {promo_excluded}건은 랭킹에서 제외됨)\n")
     for sg in sigungus:
         rows = db.execute(
-            """SELECT name, subcategory, mentions, total_read, total_comment, address, promo_flag
-               FROM place WHERE sigungu=? AND mentions>=?
+            """SELECT name, subcategory, mentions, total_read, total_comment, address
+               FROM place WHERE sigungu=? AND mentions>=? AND promo_flag=0
                ORDER BY mentions DESC, total_read DESC LIMIT ?""",
             (sg, min_mentions, top_n)).fetchall()
         if not rows:
@@ -84,9 +86,8 @@ def report(db, min_mentions=2, top_n=15):
         lines.append(f"## {sg} (언급≥{min_mentions}회, 상위 {len(rows)})")
         lines.append("| 상호 | 종류 | 언급 | 조회 | 댓글 | 주소 |")
         lines.append("|---|---|---|---|---|---|")
-        for name, subcat, m, read, cmt, addr, promo in rows:
-            mark = " ⚠️광고의심" if promo else ""
-            lines.append(f"| {name}{mark} | {subcat or '-'} | {m} | {read:,} | {cmt} | {addr or '-'} |")
+        for name, subcat, m, read, cmt, addr in rows:
+            lines.append(f"| {name} | {subcat or '-'} | {m} | {read:,} | {cmt} | {addr or '-'} |")
         lines.append("")
     # 소분류별 전체 top (지역 무관, 종류 큐레이션용)
     subcats = [r[0] for r in db.execute(
@@ -95,7 +96,8 @@ def report(db, min_mentions=2, top_n=15):
     for sc in subcats:
         rows = db.execute(
             """SELECT name, sigungu, mentions, total_read FROM place
-               WHERE subcategory=? AND mentions>=? ORDER BY mentions DESC, total_read DESC LIMIT 10""",
+               WHERE subcategory=? AND mentions>=? AND promo_flag=0
+               ORDER BY mentions DESC, total_read DESC LIMIT 10""",
             (sc, min_mentions)).fetchall()
         if not rows:
             continue
