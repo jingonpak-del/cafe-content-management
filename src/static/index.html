@@ -707,9 +707,11 @@ async function pollWatchHealth() {
     const d = await fetch('/api/watch/health').then(r => r.json());
     const agos = (d.cafes||[]).map(c => c.ago_min).filter(x => x != null);
     const worst = agos.length ? Math.max(...agos) : null;
-    el.textContent = d.ok ? `🛰 순회 정상 (${worst==null?'-':worst+'분 전'})` : `⚠ 감시 점검 필요`;
+    const runningNow = (d.cafes||[]).some(c => c.running);
+    el.textContent = !d.ok ? `⚠ 감시 점검 필요`
+      : (worst==null && runningNow) ? `🛰 순회 진행중` : `🛰 순회 정상 (${worst==null?'-':worst+'분 전'})`;
     el.className = 'badge ' + (d.ok ? 'badge-green' : 'badge-red');
-    el.title = (d.cafes||[]).map(c => `${c.name}: ${c.ago_min==null?"기록없음":c.ago_min+"분 전"} · 변동 ${c.changed??"-"} · 누락 ${c.missing??"-"} · 사라짐 ${c.gone??"-"}${c.deep?" (깊은순회)":""}`).join("\n")
+    el.title = (d.cafes||[]).map(c => `${c.name}: ${c.running?"진행중 "+c.run_page+"p · ":(c.waiting?"순서 대기 · ":"")}${c.ago_min==null?"완료기록 없음":c.ago_min+"분 전 완료"} · 변동 ${c.changed??"-"} · 누락 ${c.missing??"-"} · 사라짐 ${c.gone??"-"}${c.deep?" (깊은순회)":""}`).join("\n")
       + `\n재방문 대기 ${d.revisit.overdue}건 (최대 ${d.revisit.oldest_overdue_min}분 지연) · 최근1시간 처리 ${d.revisit.done_last_hour}건`
       + (d.warn && d.warn.length ? "\n\n⚠ " + d.warn.join("\n⚠ ") : "");
   } catch (e) {}

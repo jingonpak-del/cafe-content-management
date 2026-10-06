@@ -1701,9 +1701,23 @@ def watch_health():
             raw = db.get_meta(f"sweep_last_{c['cafe_id']}")
             info = _json.loads(raw) if raw else {}
             ago = round((_t.time() - info["finished"]) / 60) if info.get("finished") else None
-            cafes.append({"cafe_id": c["cafe_id"], "name": c.get("name", ""), "ago_min": ago, **info})
-            if ago is None or ago > 300:      # 5시간 넘게 순회 안 됨
+            run = _json.loads(db.get_meta(f"sweep_run_{c['cafe_id']}") or "{}")
+            # 순회가 지금 돌고 있으면(최근 15분 안에 진행 기록) 지연·기록없음이어도 정상
+            running = bool(run.get("at")) and (_t.time() - run["at"]) < 900                 and run.get("started", 0) > info.get("finished", 0)
+            cafes.append({"cafe_id": c["cafe_id"], "name": c.get("name", ""), "ago_min": ago,
+                          "running": running, "run_page": run.get("page") if running else None, **info})
+            if not running and (ago is None or ago > 300):      # 5시간 넘게 순회 안 됨
                 warn.append(f"{c.get('name', c['cafe_id'])} 목록순회 {'기록없음' if ago is None else str(ago // 60) + '시간 지연'}")
+        # 같은 바퀴에서 순서를 기다리는 카페는 경고 대신 '대기' (순회는 카페를 차례로 돈다)
+        lap_start = min([c_["started"] for c_ in
+                         (_json.loads(db.get_meta(f"sweep_run_{x['cafe_id']}") or "{}")
+                          for x in _load_config().get("cafes", []))
+                         if c_.get("started") and _t.time() - c_.get("at", 0) < 900] or [0])
+        if lap_start:
+            for c_ in cafes:
+                if not c_["running"] and (c_.get("finished") or 0) < lap_start:
+                    c_["waiting"] = True
+            warn = [w for w in warn if not any(w.startswith(str(c_["name"])) and c_.get("waiting") for c_ in cafes)]
         rv = db.revisit_health()
         if rv["oldest_overdue_min"] > 180:
             warn.append(f"재방문 {rv['overdue']}건 밀림(최대 {rv['oldest_overdue_min'] // 60}시간)")

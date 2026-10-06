@@ -600,6 +600,9 @@ class Watcher:
         started = time.time()
         page, hits, miss, gone, errs = 1, 0, 0, 0, 0
         while page <= max_pages:
+            if page % 20 == 1:   # 진행 중 표시(대시보드가 '기록없음' 경고 대신 '진행중'으로 보이게)
+                db.set_meta(f"sweep_run_{t.cafe_id}", json.dumps(
+                    {"started": started, "page": page, "deep": deep, "at": time.time()}))
             time.sleep(self.SWEEP_GAP_S)
             try:
                 arts = cafe_api.fetch_article_list(t.cafe_id, menu_id=0, per_page=50,
