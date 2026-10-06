@@ -231,6 +231,7 @@
       <div class="tab active" data-tab="all" onclick="switchTab('all')">전체 <span class="tab-badge" id="cnt-all">0</span></div>
       <div class="tab" data-tab="title_changed" onclick="switchTab('title_changed')">제목변경 <span class="tab-badge" id="cnt-title">0</span></div>
       <div class="tab" data-tab="deleted" onclick="switchTab('deleted')">삭제 <span class="tab-badge" id="cnt-del">0</span></div>
+      <div class="tab" data-tab="modified" onclick="switchTab('modified')" title="작성 후 본문 또는 기존 댓글 내용이 바뀐 글">본문·댓글수정 <span class="tab-badge" id="cnt-mod">0</span></div>
       <div class="tab" data-tab="duplicate" onclick="switchTab('duplicate')">중복 <span class="tab-badge" id="cnt-dup">0</span></div>
       <div class="tab" data-tab="keyword" onclick="switchTab('keyword')">키워드 <span class="tab-badge" id="cnt-kw">0</span></div>
     </div>
@@ -640,7 +641,9 @@ async function updateStats() {
   const cafeNames = (stats.cafe_names || []).map(c => c.name).join(', ');
   document.getElementById('hd-cafe').textContent = cafeNames || '카페 미설정';
   document.getElementById('cnt-all').textContent =
-    stats.deleted + stats.title_changed + stats.keyword_hit + (stats.duplicate||0);
+    stats.deleted + stats.title_changed + stats.keyword_hit + (stats.duplicate||0) + (stats.modified||0);
+  const modEl = document.getElementById('cnt-mod');
+  if (modEl) modEl.textContent = stats.modified || 0;
   document.getElementById('cnt-title').textContent = stats.title_changed;
   document.getElementById('cnt-del').textContent = stats.deleted;
   const dupEl = document.getElementById('cnt-dup');
@@ -767,6 +770,8 @@ function makeArticleRow(a) {
   const flags = [];
   if (a.status === 'deleted') flags.push('<span class="flag flag-delete">삭제</span>');
   if (a.title_changed) flags.push('<span class="flag flag-title">제목변경</span>');
+  if (a.body_changed) flags.push('<span class="flag flag-title" style="background:#7c2d12;color:#fed7aa">본문수정</span>');
+  if (a.comment_edited) flags.push(`<span class="flag flag-title" style="background:#7c2d12;color:#fed7aa">댓글수정${a.edited_comments?'×'+a.edited_comments:''}</span>`);
   if (a.is_duplicate) flags.push(`<span class="flag flag-dup">중복${a.dup_count?'×'+a.dup_count:''}</span>`);
   if (a.has_keyword_hit) flags.push('<span class="flag flag-keyword">키워드</span>');
 
@@ -875,6 +880,10 @@ function makeFlaggedRow(a) {
   let extras = '';
   if (a.title_changed && a.title !== a.current_title) {
     extras += `<div class="flagged-change">📝 "${esc(a.title)}" → "${esc(a.current_title)}"</div>`;
+  }
+  if (a.last_change && (a.body_changed || a.comment_edited)) {
+    const [kind, nick, oldT, newT] = a.last_change.split('|');
+    extras += `<div class="flagged-change" style="border-color:#c2410c">✎ ${kind==='comment' ? '댓글('+esc(nick)+')' : '본문'} 수정: "${esc(oldT)}…" → "${esc(newT)}…"</div>`;
   }
   if (a.hit_keywords) {
     extras += `<div class="flagged-keyword">🔍 키워드: ${esc(a.hit_keywords)}</div>`;

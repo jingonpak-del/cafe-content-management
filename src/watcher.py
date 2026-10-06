@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import itertools
+import queue
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -70,6 +72,9 @@ class Watcher:
         # 스탭 삭제글 동기화 주기 (30분)
         self._last_removed = 0.0
         self._removed_gap = 1800.0
+        # 목록 순회(최근 SWEEP_DAYS일 글 제목·댓글수 대조) 상태 — 카페별 커서
+        self._sweep_thread = None
+        self._sweep_missing: queue.Queue = queue.Queue()
         # not_member 재해석 주기 (6시간)
         self._last_notmember_retry = 0.0
         self._notmember_gap = 21600.0
@@ -249,6 +254,10 @@ class Watcher:
                     self._emit("deleted", {"cafe_id": cafe_id, "article_id": article_id, "phase": phase})
                     continue
 
+                # 본문 수정 감지(저장 전에 이전 본문과 비교) — 작성 후 홍보글로 바꾸는 수법
+                if self.db.check_body_change(cafe_id, article_id, body.content_text, phase):
+                    self.log(f"  ✎ BODY [{article_id}] ({phase}) 본문 수정됨")
+                    self._emit("body_changed", {"cafe_id": cafe_id, "article_id": article_id, "phase": phase})
                 # 신규 크롤 때 본문 확보 실패했으면(body_crawled=0) 이번에 저장
                 self.db.save_body(body)
 
@@ -265,6 +274,12 @@ class Watcher:
                 try:
                     self._throttle()
                     comments = cafe_api.fetch_comments(cafe_id, article_id, client=self.client)
+                    # 기존 댓글 내용 수정 감지(저장 전 비교) — 정상 댓글을 홍보 문구로 고치는 수법
+                    edits = self.db.check_comment_edits(cafe_id, article_id, comments, phase)
+                    if edits:
+                        self.log(f"  ✎ COMMENT-EDIT [{article_id}] ({phase}) 댓글 {len(edits)}개 내용 수정됨")
+                        self._emit("comment_edited", {"cafe_id": cafe_id, "article_id": article_id,
+                                                      "phase": phase, "count": len(edits)})
                     self.db.save_comments(cafe_id, article_id, comments, phase=phase)
                 except Exception:
                     pass
@@ -314,6 +329,7 @@ class Watcher:
         names = ", ".join(f"{t.name}(menu:{t.menu_id})" for t in self.targets)
         self.log(f"Watcher 시작 — 카페: {names}  tick={tick_s}s")
         self.check_session(force=True)
+        self._start_sweep()
 
         cycle = itertools.cycle(self.targets)
         i = 0
@@ -334,6 +350,7 @@ class Watcher:
                 self._maybe_sync_sheet()
                 self._resolve_some()
                 self._maybe_retry_notmember()
+                self._drain_sweep_missing()
                 self._maybe_maintenance()
                 self._maybe_backfill_past()
                 self._maybe_sync_removed()
@@ -519,6 +536,84 @@ class Watcher:
                 self._emit("resolve_progress", self.db.resolution_stats())
         except Exception as e:
             self.log(f"  ! 회원 해석 실패: {e}")
+
+    # ── 목록 순회 (재방문 스케줄 사이의 공백 보완) ──────────────────────────
+    # 고정 스케줄(12h~7d, 30d) 사이에 제목·본문·댓글을 바꾸면 다음 방문까지 못 본다.
+    # 전체글 목록 API는 현재 제목·댓글수를 싸게 주므로, 최근 SWEEP_DAYS일치 목록을
+    # 별도 스레드에서 계속 훑어 달라진 글만 즉시 재방문 예약한다(본문·댓글 비교는
+    # 재방문에서). 메인 루프(요청간격 1.5s)와 분리해 한 바퀴를 수 분 안에 끝낸다.
+    # DB에 없는 글(서버 중단 등으로 누락)은 큐에 넣고 메인 루프가 조금씩 수집한다.
+    SWEEP_DAYS = 45
+    SWEEP_GAP_S = 1.2           # 순회 요청 간격
+    SWEEP_REST_S = 2 * 3600     # 한 바퀴 끝나면 쉬는 시간
+    SWEEP_MISSING_PER_CYCLE = 10
+
+    def _start_sweep(self):
+        if self._sweep_thread is not None:
+            return
+        self._sweep_thread = threading.Thread(target=self._sweep_loop, name="sweep", daemon=True)
+        self._sweep_thread.start()
+
+    def _sweep_loop(self):
+        import httpx
+        db = Database(self.db.path)
+        db.conn.execute("PRAGMA busy_timeout=15000")
+        time.sleep(20)
+        while True:
+            # 세션 쿠키는 순회마다 메인 클라이언트에서 복사(재로그인 반영)
+            client = httpx.Client(headers=self.client.headers, cookies=self.client.cookies,
+                                  timeout=12.0, follow_redirects=True)
+            try:
+                for t in self.targets:
+                    try:
+                        self._sweep_cafe(db, client, t)
+                    except Exception as e:
+                        self.log(f"  ! 순회 실패 [{t.name}]: {e}")
+            finally:
+                client.close()
+            time.sleep(self.SWEEP_REST_S)
+
+    def _sweep_cafe(self, db: Database, client, t: CafeTarget):
+        cutoff = (time.time() - self.SWEEP_DAYS * 86400) * 1000
+        page, hits, miss, errs = 1, 0, 0, 0
+        while page <= 3000:
+            time.sleep(self.SWEEP_GAP_S)
+            try:
+                arts = cafe_api.fetch_article_list(t.cafe_id, menu_id=0, per_page=50,
+                                                   page=page, client=client)
+            except Exception as e:
+                errs += 1
+                if errs >= 3:
+                    self.log(f"  ! 순회 중단 [{t.name}] p{page}: {e}")
+                    break
+                time.sleep(30)
+                continue
+            changed, missing = db.sweep_compare(t.cafe_id, arts)
+            for aid, why in changed:
+                db.enqueue_revisit_now(t.cafe_id, aid)
+                self.log(f"  ⟳ SWEEP [{t.name}][{aid}] {why} 변동 → 즉시 재방문")
+            for a in missing:
+                self._sweep_missing.put((t, a))
+            hits += len(changed)
+            miss += len(missing)
+            dated = [a.write_ts for a in arts if a.write_ts and not a.is_notice]
+            if not arts or len(arts) < 50 or (dated and min(dated) < cutoff):
+                break
+            page += 1
+        self.log(f"  ⟳ SWEEP [{t.name}] 1바퀴 완료 {page}p · 변동 {hits} · 누락 {miss}")
+
+    def _drain_sweep_missing(self):
+        """순회에서 발견한 미수집 글을 메인 루프에서 조금씩 수집(본문·댓글·업체매칭)."""
+        for _ in range(self.SWEEP_MISSING_PER_CYCLE):
+            try:
+                t, a = self._sweep_missing.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                if self.db.upsert_article(a, session_ok=self.session_ok):
+                    self._crawl_new(a, t)
+            except Exception as e:
+                self.log(f"  ! 누락글 수집 실패 [{a.article_id}]: {e}")
 
     def _maybe_retry_notmember(self):
         """6시간마다 오래된 not_member 를 pending 으로 되돌려 재해석(자가치유).

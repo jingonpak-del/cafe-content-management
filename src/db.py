@@ -20,6 +20,15 @@ def normalize_title(title: str) -> str:
 DUP_MIN_CONTENT_LEN = 30
 
 
+_NORM_RE = re.compile(r"[\s\u200b\u200c\u200d\ufeff]+")  # 공백·제로폭 문자
+
+def _norm_text(t) -> str:
+    """수정 비교용 정규화: HTML 엔티티 해제, 공백·제로폭 문자 제거."""
+    import html as _html
+    t = _html.unescape(t or "")
+    return _NORM_RE.sub("", t)
+
+
 def content_hash(content_text: str) -> str | None:
     """중복 판정용 본문 해시. 공백·특수문자 제거 후 정규화.
     본문이 너무 짧으면(도배 판정 부적합) None."""
@@ -185,6 +194,21 @@ CREATE TABLE IF NOT EXISTS supporter_member (
     PRIMARY KEY (group_id, cafe_id, member_key)
 );
 
+-- 본문·댓글 수정 이력 (작성 후 몰래 홍보글로 바꾸는 행위 추적)
+CREATE TABLE IF NOT EXISTS content_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    cafe_id     INTEGER NOT NULL,
+    article_id  INTEGER NOT NULL,
+    kind        TEXT NOT NULL,          -- body | comment
+    comment_id  INTEGER,
+    nickname    TEXT,
+    old_text    TEXT,
+    new_text    TEXT,
+    detected_at INTEGER,
+    check_phase TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_content_history_article ON content_history (cafe_id, article_id);
+
 -- 서포터즈 분석: 통계 제외 게시글 (이벤트·미션용 글 → 이 글에 단 댓글은 댓글수에서 제외)
 CREATE TABLE IF NOT EXISTS supporter_exclude (
     group_id    INTEGER NOT NULL,
@@ -292,7 +316,10 @@ class Database:
                           ("delete_type", "TEXT"),          # staff | self | NULL(미정)
                           ("deleted_by_nick", "TEXT"), ("deleted_by_tag", "TEXT"),
                           ("deleted_by_id", "TEXT"),
-                          ("image_count", "INTEGER"), ("content_len", "INTEGER")):
+                          ("image_count", "INTEGER"), ("content_len", "INTEGER"),
+                          ("body_changed", "INTEGER DEFAULT 0"),    # 작성 후 본문 수정 감지
+                          ("comment_edited", "INTEGER DEFAULT 0"),  # 기존 댓글 내용 수정 감지
+                          ("sweep_cmt", "INTEGER")):                # 목록순회 때 본 댓글수(변동 감지 기준)
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {decl}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dup ON articles (cafe_id, member_key, content_hash)")
@@ -301,11 +328,16 @@ class Database:
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_memwt ON articles (cafe_id, member_key, write_ts, article_id)")
         # 이상감지 여부 생성컬럼(제목변경|삭제|키워드|중복) — 우측 패널 조회를 O(전체스캔)에서
         # 인덱스 조회로 전환(중복 폭증 시 상관 서브쿼리로 멈추던 문제 근본 해결).
+        # (본문수정·댓글수정도 이상으로 포함. 예전 정의면 지우고 다시 만든다)
+        tsql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name='articles'").fetchone()[0] or ""
+        if "is_flagged" in tsql and "comment_edited=1" not in tsql.split("is_flagged", 1)[1]:
+            self.conn.execute("DROP INDEX IF EXISTS idx_is_flagged")
+            self.conn.execute("ALTER TABLE articles DROP COLUMN is_flagged")
         try:
             self.conn.execute(
                 "ALTER TABLE articles ADD COLUMN is_flagged AS "
                 "(CASE WHEN title_changed=1 OR status='deleted' OR has_keyword_hit=1 "
-                "OR is_duplicate=1 THEN 1 ELSE 0 END) VIRTUAL")
+                "OR is_duplicate=1 OR body_changed=1 OR comment_edited=1 THEN 1 ELSE 0 END) VIRTUAL")
         except Exception:
             pass  # 이미 존재
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_is_flagged ON articles (is_flagged, reviewed)")
@@ -669,19 +701,111 @@ class Database:
         self.conn.commit()
         return True
 
+    def check_body_change(self, cafe_id: int, article_id: int, new_text: str, phase: str) -> bool:
+        """저장된 본문과 비교해 수정됐으면 이력 저장 + body_changed 플래그. True=변경됨.
+        공백·제로폭 문자 차이는 무시(실제 내용 변경만)."""
+        row = self.conn.execute(
+            "SELECT content_text, body_crawled FROM articles WHERE cafe_id=? AND article_id=?",
+            (cafe_id, article_id)).fetchone()
+        if not row or not row["body_crawled"] or not row["content_text"] or not new_text:
+            return False
+        if _norm_text(row["content_text"]) == _norm_text(new_text):
+            return False
+        ts = now_ms()
+        self.conn.execute(
+            """INSERT INTO content_history (cafe_id, article_id, kind, old_text, new_text, detected_at, check_phase)
+               VALUES (?,?,?,?,?,?,?)""",
+            (cafe_id, article_id, "body", row["content_text"][:2000], new_text[:2000], ts, phase))
+        self.conn.execute(
+            "UPDATE articles SET body_changed=1, flag_ts=?, reviewed=0 WHERE cafe_id=? AND article_id=?",
+            (ts, cafe_id, article_id))
+        self.conn.commit()
+        return True
+
+    def check_comment_edits(self, cafe_id: int, article_id: int, comments, phase: str) -> list:
+        """같은 댓글(comment_id)의 내용이 바뀌었는지 비교. 바뀐 댓글 목록 반환.
+        (예전 정상 댓글을 홍보 문구로 고쳐 쓰는 수법 감지)"""
+        prev = {}
+        for r in self.conn.execute(
+                "SELECT comment_id, content FROM comments WHERE cafe_id=? AND article_id=? ORDER BY crawled_at",
+                (cafe_id, article_id)):
+            prev[r["comment_id"]] = r["content"]
+        edits = []
+        for c in comments or []:
+            if c.is_deleted:
+                continue
+            old = prev.get(c.comment_id)
+            if old and c.content and _norm_text(old) != _norm_text(c.content):
+                edits.append(c)
+        if edits:
+            ts = now_ms()
+            self.conn.executemany(
+                """INSERT INTO content_history (cafe_id, article_id, kind, comment_id, nickname,
+                       old_text, new_text, detected_at, check_phase) VALUES (?,?,?,?,?,?,?,?,?)""",
+                [(cafe_id, article_id, "comment", c.comment_id, c.writer_nickname,
+                  (prev.get(c.comment_id) or "")[:1000], (c.content or "")[:1000], ts, phase)
+                 for c in edits])
+            self.conn.execute(
+                "UPDATE articles SET comment_edited=1, flag_ts=?, reviewed=0 WHERE cafe_id=? AND article_id=?",
+                (ts, cafe_id, article_id))
+            self.conn.commit()
+        return edits
+
+    def sweep_compare(self, cafe_id: int, arts) -> tuple[list, list]:
+        """목록 순회: 목록의 현재 제목·댓글수를 DB와 비교.
+        반환 (변동 [(article_id, 사유)], DB에 없는 글 [ArticleSummary]).
+        댓글수 기준(sweep_cmt)은 처음 볼 때 기록만 하고, 이후 달라지면 변동으로 본다."""
+        live = [a for a in arts if not (a.is_notice or a.blinded)]
+        if not live:
+            return [], []
+        ph = ",".join("?" * len(live))
+        rows = {r["article_id"]: r for r in self.conn.execute(
+            f"""SELECT article_id, current_title, status, sweep_cmt FROM articles
+                WHERE cafe_id=? AND article_id IN ({ph})""",
+            [cafe_id] + [a.article_id for a in live])}
+        changed, missing = [], []
+        for a in live:
+            r = rows.get(a.article_id)
+            if not r:
+                missing.append(a)
+                continue
+            if r["status"] != "active":
+                continue
+            why = []
+            if _norm_text(a.title) != _norm_text(r["current_title"]):
+                why.append("제목")
+            if r["sweep_cmt"] is not None and a.comment_count != r["sweep_cmt"]:
+                why.append(f"댓글{r['sweep_cmt']}→{a.comment_count}")
+            if r["sweep_cmt"] != a.comment_count:
+                self.conn.execute("UPDATE articles SET sweep_cmt=? WHERE cafe_id=? AND article_id=?",
+                                  (a.comment_count, cafe_id, a.article_id))
+            if why:
+                changed.append((a.article_id, ",".join(why)))
+        self.conn.commit()
+        return changed, missing
+
+    def enqueue_revisit_now(self, cafe_id: int, article_id: int, tag: str = "sweep"):
+        """즉시 재방문 예약 (목록순회에서 변동을 본 글)."""
+        ts = now_ms()
+        self.conn.execute(
+            "INSERT OR IGNORE INTO revisit_schedule (cafe_id, article_id, phase, due_at) VALUES (?,?,?,?)",
+            (cafe_id, article_id, f"{tag}{ts}", ts))
+        self.conn.commit()
+
     # ── 재방문 스케줄 ──────────────────────────────────────────────────────
 
     def due_revisits(self, limit: int = 50) -> list:
         # body_crawled 조건 없음: 본문 크롤이 실패했어도 제목변경/삭제는 재방문에서
         # 확인해야 한다 (재방문 시 제목을 새로 가져오므로 본문 크롤 성공 여부와 무관).
-        # 업체글 우선 처리 (수정·삭제 타이밍이 더 중요).
+        # 목록순회에서 변동이 보인 글(sweep) 최우선, 다음 업체글 (수정·삭제 타이밍이 더 중요).
         return self.conn.execute(
             """SELECT r.cafe_id, r.article_id, r.phase, a.menu_id, a.title,
                       a.current_title, a.member_key, a.naver_id
                FROM revisit_schedule r
                JOIN articles a ON a.cafe_id=r.cafe_id AND a.article_id=r.article_id
                WHERE r.done=0 AND r.due_at<=? AND a.status='active'
-               ORDER BY (CASE WHEN a.company_name IS NOT NULL AND a.company_name!='' THEN 0 ELSE 1 END),
+               ORDER BY (CASE WHEN r.phase LIKE 'sweep%' OR r.phase LIKE 'test%' THEN 0 ELSE 1 END),
+                        (CASE WHEN a.company_name IS NOT NULL AND a.company_name!='' THEN 0 ELSE 1 END),
                         r.due_at
                LIMIT ?""",
             (now_ms(), limit),
@@ -1163,6 +1287,8 @@ class Database:
             where.append("a.has_keyword_hit=1")
         elif flag_type == "duplicate":
             where.append("a.is_duplicate=1")
+        elif flag_type == "modified":
+            where.append("(a.body_changed=1 OR a.comment_edited=1)")
         if cafe_id:
             where.append("a.cafe_id=?"); params.append(cafe_id)
         if search:
@@ -1179,7 +1305,13 @@ class Database:
             where.append("(a.is_duplicate=0 OR a.dup_rep=1)")
 
         sql = f"""SELECT a.*,
-                        GROUP_CONCAT(DISTINCT h.keyword_text) AS hit_keywords
+                        GROUP_CONCAT(DISTINCT h.keyword_text) AS hit_keywords,
+                        (SELECT COUNT(*) FROM content_history ch
+                         WHERE ch.cafe_id=a.cafe_id AND ch.article_id=a.article_id AND ch.kind='comment') AS edited_comments,
+                        (SELECT ch.kind || '|' || COALESCE(ch.nickname,'') || '|' || substr(ch.old_text,1,60)
+                                || '|' || substr(ch.new_text,1,120)
+                         FROM content_history ch WHERE ch.cafe_id=a.cafe_id AND ch.article_id=a.article_id
+                         ORDER BY ch.id DESC LIMIT 1) AS last_change
                   FROM articles a
                   LEFT JOIN keyword_hits h ON h.cafe_id=a.cafe_id AND h.article_id=a.article_id
                   WHERE {' AND '.join(where)}
@@ -1525,6 +1657,8 @@ class Database:
             "deleted_staff":c("SELECT COUNT(*) FROM articles WHERE delete_type='staff'").fetchone()[0],
             "title_changed":c("SELECT COUNT(*) FROM articles WHERE title_changed=1").fetchone()[0],
             "keyword_hit":  c("SELECT COUNT(*) FROM articles WHERE has_keyword_hit=1").fetchone()[0],
+            # 우측 '본문·댓글 수정' 탭 배지
+            "modified":     c("SELECT COUNT(*) FROM articles WHERE (body_changed=1 OR comment_edited=1) AND COALESCE(delete_type,'')!='staff'").fetchone()[0],
             # 우측 중복 탭 배지: 실제 표시되는 대표(계정당 최신 1건)만 카운트
             "duplicate":    c("SELECT COUNT(*) FROM articles WHERE is_duplicate=1 AND dup_rep=1").fetchone()[0],
             "with_company": c("SELECT COUNT(*) FROM articles WHERE company_name IS NOT NULL AND company_name!=''").fetchone()[0],
