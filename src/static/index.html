@@ -362,6 +362,7 @@
       <button class="btn-secondary" onclick="createSupGroup()">+ 새 그룹</button>
       <button class="btn-secondary" onclick="delSupGroup()">그룹 삭제</button>
       <button class="btn-secondary" onclick="toggleSupMembers()">👤 그룹원 관리</button>
+      <button class="btn-secondary" onclick="toggleSupExcludes()" title="이벤트·미션용 게시글: 여기 단 댓글은 댓글수 통계에서 제외">🚫 제외 게시글 <span id="sup-exc-count" style="color:#fbbf24"></span></button>
       <div style="flex:1"></div>
       <span style="font-size:12px;color:#93c5fd">기간</span>
       <input type="date" id="sup-start" class="form-input" style="width:auto;padding:4px 8px">
@@ -395,6 +396,15 @@
         <button class="btn-success" style="margin-top:4px" onclick="bulkAddSupMembers()">✅ 일괄등록</button>
       </div>
       <div id="sup-member-list" style="max-height:150px;overflow-y:auto"></div>
+    </div>
+    <!-- 통계 제외 게시글 (이벤트·미션 글에 단 댓글은 댓글수에서 제외) -->
+    <div id="sup-excludes-area" style="display:none;padding:10px 16px;border-bottom:1px solid #0f3460;background:#1a1500">
+      <div style="font-size:12px;color:#fbbf24;margin-bottom:6px">🚫 통계 제외 게시글 — 아래 글에 그룹원이 단 댓글은 <b>댓글수에서 빠집니다</b> (게시글 링크를 줄바꿈으로 여러 개 입력)</div>
+      <div style="display:flex;gap:6px;align-items:flex-start">
+        <textarea id="sup-exc-links" class="form-input" style="flex:1;height:70px;padding:6px;font-family:monospace;font-size:12px" placeholder="https://cafe.naver.com/masanmam/7537557&#10;https://cafe.naver.com/masanmam/7539878"></textarea>
+        <button class="btn-success" onclick="addSupExcludes()">➕ 제외 추가</button>
+      </div>
+      <div id="sup-exc-list" style="max-height:170px;overflow-y:auto;margin-top:6px"></div>
     </div>
     <div id="sup-refresh-bar" style="display:none;padding:6px 16px;background:#1a1a00;color:#fcd34d;font-size:12px"></div>
     <div id="supporter-box-body" style="flex:1;overflow-y:auto;padding:12px"><div class="empty-msg">그룹을 선택하거나 만들어 그룹원을 등록하세요</div></div>
@@ -579,6 +589,7 @@ let articleStatus = '';
 let searchTimer = null;
 let ws = null;
 let selectedFlagged = new Set();   // 이상감지 패널에서 확인 대기로 선택한 항목 (cafe-article)
+let shownFlagKeys = new Set();      // 이미 화면에 그린 글(중복 렌더 방지: 1글=1행)
 function flagKey(cafe_id, article_id) { return `${cafe_id}-${article_id}`; }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────────
@@ -823,7 +834,7 @@ function debounceFlagSearch() {
 }
 
 async function loadFlagged(reset = true) {
-  if (reset) flaggedOffset = 0;
+  if (reset) { flaggedOffset = 0; shownFlagKeys.clear(); }
   const search = encodeURIComponent((document.getElementById('flag-search')?.value || '').trim());
   const cafeId = document.getElementById('flag-cafe')?.value || '0';
   const r = await fetch(`/api/flagged?type=${currentTab}&search=${search}&cafe_id=${cafeId}&limit=80&offset=${flaggedOffset}`);
@@ -836,7 +847,14 @@ async function loadFlagged(reset = true) {
     el.innerHTML = search ? '<div class="empty-msg">검색 결과 없음</div>' : '<div class="empty-msg">이상 감지 항목 없음</div>';
     return;
   }
-  data.rows.forEach(a => el.appendChild(makeFlaggedRow(a)));
+  // 이미 그린 글은 건너뜀 — offset 페이지네이션 중 목록이 재정렬돼도 같은 글이
+  // 2~3번 그려지지 않게(1글=1행). 제목변경이 여러 번이어도 최신 상태 1행만 유지.
+  data.rows.forEach(a => {
+    const k = flagKey(a.cafe_id, a.article_id);
+    if (shownFlagKeys.has(k)) return;
+    shownFlagKeys.add(k);
+    el.appendChild(makeFlaggedRow(a));
+  });
   flaggedOffset += data.rows.length;
   updateSelCount();
 }
@@ -1124,6 +1142,7 @@ function toggleSupMembers() {
 }
 async function onSupGroupChange() {
   const gid = curSupGroup();
+  loadSupExcludes();
   if (!gid) { document.getElementById('supporter-box-body').innerHTML='<div class="empty-msg">그룹을 만들어 그룹원을 등록하세요</div>'; return; }
   // 게시판 드롭다운
   const boards = await fetch(`/api/supporters/${gid}/boards`).then(r=>r.json());
@@ -1150,6 +1169,44 @@ async function delSupMember(gid, cafe_id, mk) {
   await fetch(`/api/supporters/${gid}/members/${cafe_id}/${encodeURIComponent(mk)}`, {method:'DELETE'});
   loadSupMembers(); loadSupGroups();
 }
+// ── 통계 제외 게시글 ──
+function toggleSupExcludes() {
+  const el = document.getElementById('sup-excludes-area');
+  el.style.display = el.style.display==='block' ? 'none' : 'block';
+  if (el.style.display==='block') loadSupExcludes();
+}
+async function loadSupExcludes() {
+  const gid = curSupGroup(); const list = document.getElementById('sup-exc-list');
+  if (!gid) { list.innerHTML=''; document.getElementById('sup-exc-count').textContent=''; return; }
+  const rows = await fetch(`/api/supporters/${gid}/excludes`).then(r=>r.json());
+  document.getElementById('sup-exc-count').textContent = rows.length ? `(${rows.length})` : '';
+  if (!rows.length) { list.innerHTML = '<div style="color:#666;font-size:12px">제외 게시글 없음</div>'; return; }
+  list.innerHTML = rows.map(r=>`
+    <div style="display:flex;gap:8px;align-items:center;font-size:12px;padding:3px 0;border-bottom:1px solid #2a2500">
+      <span style="color:#4a6fa5">[${esc(r.cafe_name)}]</span>
+      <a href="${r.link}" target="_blank" style="color:#7fa8d0;text-decoration:none;user-select:all">${esc(r.link)}</a>
+      <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title||'(미수집 글)')}</span>
+      <span style="color:#888;white-space:nowrap">${r.write_str||''}</span>
+      <span style="color:#fbbf24;white-space:nowrap" title="그룹원이 이 글에 단 댓글(통계에서 제외됨)">제외댓글 ${r.excluded_comments||0}</span>
+      <button class="btn-secondary" style="padding:1px 8px;font-size:11px" onclick="delSupExclude(${r.cafe_id},${r.article_id})">삭제</button>
+    </div>`).join('');
+}
+async function addSupExcludes() {
+  const gid = curSupGroup(); if (!gid) { showToast('그룹을 선택하세요'); return; }
+  const links = document.getElementById('sup-exc-links').value.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean);
+  if (!links.length) { showToast('게시글 링크를 입력하세요'); return; }
+  const d = await fetch(`/api/supporters/${gid}/excludes`, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({links})}).then(r=>r.json());
+  showToast(`제외 ${d.added}건 추가` + (d.duplicate?` · 중복 ${d.duplicate}`:'') + ((d.invalid||[]).length?` · 인식불가 ${d.invalid.length}`:''));
+  if ((d.invalid||[]).length) alert('인식 못한 링크: ' + d.invalid.join(', '));
+  document.getElementById('sup-exc-links').value = '';
+  await loadSupExcludes(); loadSupStats();
+}
+async function delSupExclude(cafe_id, article_id) {
+  const gid = curSupGroup();
+  await fetch(`/api/supporters/${gid}/excludes/${cafe_id}/${article_id}`, {method:'DELETE'});
+  await loadSupExcludes(); loadSupStats();
+}
+
 async function bulkAddSupMembers() {
   const gid = curSupGroup(); if (!gid) { showToast('먼저 그룹을 선택/생성하세요'); return; }
   const ids = document.getElementById('sup-bulk-ids').value.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);

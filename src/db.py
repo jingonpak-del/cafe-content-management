@@ -32,28 +32,17 @@ def content_hash(content_text: str) -> str | None:
 
 # 재방문 체크포인트 (초 단위). H=시간.
 # 일반글: 10일까지 6회. 업체글: 30일까지 12회(더 촘촘 + 연장).
+# 일반·업체 동일: 12시간, 1일, 2일, 3일, 5일, 7일, 30일
 REVISIT_PHASES_NORMAL: dict[str, int] = {
     "12h":  12 * 3600,
     "1d":   24 * 3600,
     "2d":   48 * 3600,
     "3d":   72 * 3600,
     "5d":  120 * 3600,
-    "10d": 240 * 3600,
-}
-REVISIT_PHASES_COMPANY: dict[str, int] = {
-    "6h":    6 * 3600,
-    "12h":  12 * 3600,
-    "1d":   24 * 3600,
-    "2d":   48 * 3600,
-    "3d":   72 * 3600,
-    "4d":   96 * 3600,
-    "5d":  120 * 3600,
     "7d":  168 * 3600,
-    "10d": 240 * 3600,
-    "14d": 336 * 3600,
-    "21d": 504 * 3600,
     "30d": 720 * 3600,
 }
+REVISIT_PHASES_COMPANY: dict[str, int] = dict(REVISIT_PHASES_NORMAL)
 # 하위호환: 기존 코드가 참조하던 이름
 REVISIT_PHASES = REVISIT_PHASES_NORMAL
 
@@ -196,6 +185,17 @@ CREATE TABLE IF NOT EXISTS supporter_member (
     PRIMARY KEY (group_id, cafe_id, member_key)
 );
 
+-- 서포터즈 분석: 통계 제외 게시글 (이벤트·미션용 글 → 이 글에 단 댓글은 댓글수에서 제외)
+CREATE TABLE IF NOT EXISTS supporter_exclude (
+    group_id    INTEGER NOT NULL,
+    cafe_id     INTEGER NOT NULL,
+    article_id  INTEGER NOT NULL,
+    url         TEXT,
+    memo        TEXT,
+    added_at    INTEGER,
+    PRIMARY KEY (group_id, cafe_id, article_id)
+);
+
 -- 네이버 카페 통계도구(멤버순위) 월간 공식 통계 캐시 (삭제 포함 누적)
 CREATE TABLE IF NOT EXISTS naver_member_stat (
     cafe_id     INTEGER NOT NULL,
@@ -309,6 +309,8 @@ class Database:
         except Exception:
             pass  # 이미 존재
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_is_flagged ON articles (is_flagged, reviewed)")
+        # 서포터즈 댓글수 집계용 (comments 수백만 행 → 작성자·기간 조회)
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_comments_member ON comments (cafe_id, member_key, update_ts)")
         # 작성자 그룹: 기존 watched_writer 에 group_id 추가
         ww_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(watched_writer)")}
         if "group_id" not in ww_cols:
@@ -1303,6 +1305,7 @@ class Database:
     def delete_supporter_group(self, group_id: int):
         self.conn.execute("DELETE FROM supporter_group WHERE id=?", (group_id,))
         self.conn.execute("DELETE FROM supporter_member WHERE group_id=?", (group_id,))
+        self.conn.execute("DELETE FROM supporter_exclude WHERE group_id=?", (group_id,))
         self.conn.commit()
 
     def get_supporter_groups(self) -> list:
@@ -1325,6 +1328,29 @@ class Database:
         self.conn.execute(
             "DELETE FROM supporter_member WHERE group_id=? AND cafe_id=? AND member_key=?",
             (group_id, cafe_id, member_key))
+        self.conn.commit()
+
+    def get_supporter_excludes(self, group_id: int) -> list:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT e.*, a.current_title AS title, a.write_ts,
+                      (SELECT COUNT(DISTINCT c.comment_id) FROM comments c
+                       JOIN supporter_member m ON m.group_id=e.group_id AND m.cafe_id=c.cafe_id
+                                              AND m.member_key=c.member_key
+                       WHERE c.cafe_id=e.cafe_id AND c.article_id=e.article_id) AS excluded_comments
+               FROM supporter_exclude e
+               LEFT JOIN articles a ON a.cafe_id=e.cafe_id AND a.article_id=e.article_id
+               WHERE e.group_id=? ORDER BY e.article_id DESC""", (group_id,)).fetchall()]
+
+    def add_supporter_exclude(self, group_id: int, cafe_id: int, article_id: int, url: str = "") -> bool:
+        cur = self.conn.execute(
+            """INSERT OR IGNORE INTO supporter_exclude (group_id, cafe_id, article_id, url, added_at)
+               VALUES (?,?,?,?,?)""", (group_id, cafe_id, article_id, url, now_ms()))
+        self.conn.commit()
+        return cur.rowcount > 0
+
+    def remove_supporter_exclude(self, group_id: int, cafe_id: int, article_id: int):
+        self.conn.execute("DELETE FROM supporter_exclude WHERE group_id=? AND cafe_id=? AND article_id=?",
+                          (group_id, cafe_id, article_id))
         self.conn.commit()
 
     def get_supporter_members(self, group_id: int) -> list:
@@ -1359,6 +1385,9 @@ class Database:
             cw, cp = ["cafe_id=?", "member_key=?"], [cid, mk]
             if start_ms is not None: cw.append("update_ts>=?"); cp.append(start_ms)
             if end_ms is not None: cw.append("update_ts<=?"); cp.append(end_ms)
+            # 제외 게시글(이벤트·미션)에 단 댓글은 빼고 센다
+            cw.append("article_id NOT IN (SELECT article_id FROM supporter_exclude WHERE group_id=? AND cafe_id=?)")
+            cp += [group_id, cid]
             cmt = self.conn.execute(
                 f"SELECT COUNT(DISTINCT comment_id) FROM comments WHERE {' AND '.join(cw)}", cp).fetchone()[0]
             # 최근 닉네임

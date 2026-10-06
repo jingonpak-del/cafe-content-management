@@ -695,6 +695,75 @@ async def sup_members_bulk(group_id: int, req: dict):
         db.close()
 
 
+def _parse_article_link(link: str):
+    """게시글 링크 → (cafe_id, article_id). 지원 형식:
+    cafe.naver.com/{cafe_url}/{id}, .../ca-fe/cafes/{cid}/articles/{id}, ...?clubid=..&articleid=.."""
+    import re as _re
+    link = (link or "").strip()
+    m = _re.search(r"cafes/(\d+)/articles/(\d+)", link)
+    if m:
+        return int(m.group(1)), int(m.group(2))
+    m1, m2 = _re.search(r"clubid=(\d+)", link, _re.I), _re.search(r"articleid=(\d+)", link, _re.I)
+    if m1 and m2:
+        return int(m1.group(1)), int(m2.group(1))
+    m = _re.search(r"cafe\.naver\.com/([A-Za-z0-9_\-]+)/(\d+)", link)
+    if m:
+        by_url = {u.lower(): cid for cid, u in _cafe_urls().items() if u}
+        cid = by_url.get(m.group(1).lower())
+        if cid:
+            return cid, int(m.group(2))
+    return None
+
+
+@app.get("/api/supporters/{group_id}/excludes")
+def sup_excludes(group_id: int):
+    db = _db()
+    try:
+        names, urls = _cafe_names(), _cafe_urls()
+        rows = db.get_supporter_excludes(group_id)
+        for r in rows:
+            r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
+            r["link"] = (f"https://cafe.naver.com/{urls[r['cafe_id']]}/{r['article_id']}"
+                         if urls.get(r["cafe_id"]) else r.get("url") or "")
+            r["write_str"] = _fmt(r.get("write_ts"))
+        return rows
+    finally:
+        db.close()
+
+
+@app.post("/api/supporters/{group_id}/excludes")
+async def sup_excludes_add(group_id: int, req: dict):
+    """통계 제외 게시글 링크 일괄 추가 (줄바꿈/쉼표 구분). 그 글에 단 댓글은 댓글수에서 빠진다."""
+    raw = req.get("links") or []
+    if isinstance(raw, str):
+        import re as _re
+        raw = _re.split(r"[\s,]+", raw)
+    added, dup, bad = 0, 0, []
+    db = _db()
+    try:
+        for link in [x.strip() for x in raw if x and x.strip()]:
+            p = _parse_article_link(link)
+            if not p:
+                bad.append(link); continue
+            if db.add_supporter_exclude(group_id, p[0], p[1], link):
+                added += 1
+            else:
+                dup += 1
+        return {"ok": True, "added": added, "duplicate": dup, "invalid": bad}
+    finally:
+        db.close()
+
+
+@app.delete("/api/supporters/{group_id}/excludes/{cafe_id}/{article_id}")
+def sup_excludes_del(group_id: int, cafe_id: int, article_id: int):
+    db = _db()
+    try:
+        db.remove_supporter_exclude(group_id, cafe_id, article_id)
+        return {"ok": True}
+    finally:
+        db.close()
+
+
 @app.delete("/api/supporters/{group_id}/members/{cafe_id}/{member_key}")
 def sup_member_del(group_id: int, cafe_id: int, member_key: str):
     db = _db()
