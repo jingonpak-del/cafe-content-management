@@ -539,44 +539,67 @@ class Watcher:
 
     # ── 목록 순회 (재방문 스케줄 사이의 공백 보완) ──────────────────────────
     # 고정 스케줄(12h~7d, 30d) 사이에 제목·본문·댓글을 바꾸면 다음 방문까지 못 본다.
-    # 전체글 목록 API는 현재 제목·댓글수를 싸게 주므로, 최근 SWEEP_DAYS일치 목록을
-    # 별도 스레드에서 계속 훑어 달라진 글만 즉시 재방문 예약한다(본문·댓글 비교는
-    # 재방문에서). 메인 루프(요청간격 1.5s)와 분리해 한 바퀴를 수 분 안에 끝낸다.
-    # DB에 없는 글(서버 중단 등으로 누락)은 큐에 넣고 메인 루프가 조금씩 수집한다.
+    # 전체글 목록 API는 글마다 현재 제목·댓글수·본문앞부분(summary)을 싸게 주므로,
+    # 별도 스레드에서 계속 훑어 달라진 글만 즉시 재방문 예약한다(정밀 비교는 재방문).
+    #  - 일반 순회: 최근 SWEEP_DAYS일, 한 바퀴 후 SWEEP_REST_S 휴식
+    #  - 깊은 순회: 하루 한 번, 목록 API 한도(DEEP_MAX_PAGES)까지 — 오래된 글 수정 대비
+    #  - 목록에서 사라진 글(삭제·비공개 전환)도 재방문해 상태 확인
+    #  - DB에 없는 글(서버 중단 누락)은 큐에 넣고 메인 루프가 수집
+    #  - 진행 상황은 meta(sweep_last_<cafe_id>)에 기록 → 대시보드 상태 표시
     SWEEP_DAYS = 45
-    SWEEP_GAP_S = 1.2           # 순회 요청 간격
-    SWEEP_REST_S = 2 * 3600     # 한 바퀴 끝나면 쉬는 시간
+    SWEEP_GAP_S = 1.2            # 순회 요청 간격
+    SWEEP_REST_S = 2 * 3600      # 한 바퀴 끝나면 쉬는 시간
+    DEEP_EVERY_S = 24 * 3600     # 깊은 순회 주기
+    DEEP_DAYS = 365
+    DEEP_MAX_PAGES = 1000        # 목록 API 5만건 상한(50건×1000p)
     SWEEP_MISSING_PER_CYCLE = 10
 
     def _start_sweep(self):
-        if self._sweep_thread is not None:
+        if self._sweep_thread is not None and self._sweep_thread.is_alive():
             return
+        if self._sweep_thread is not None:
+            self.log("  ⚠ 순회 스레드가 멈춰 있어 다시 시작합니다")
         self._sweep_thread = threading.Thread(target=self._sweep_loop, name="sweep", daemon=True)
         self._sweep_thread.start()
 
     def _sweep_loop(self):
         import httpx
+        time.sleep(20)
         db = Database(self.db.path)
         db.conn.execute("PRAGMA busy_timeout=15000")
-        time.sleep(20)
+        last_deep = float(db.get_meta("sweep_last_deep") or 0)
         while True:
-            # 세션 쿠키는 순회마다 메인 클라이언트에서 복사(재로그인 반영)
-            client = httpx.Client(headers=self.client.headers, cookies=self.client.cookies,
-                                  timeout=12.0, follow_redirects=True)
             try:
-                for t in self.targets:
-                    try:
-                        self._sweep_cafe(db, client, t)
-                    except Exception as e:
-                        self.log(f"  ! 순회 실패 [{t.name}]: {e}")
-            finally:
-                client.close()
+                deep = (time.time() - last_deep) >= self.DEEP_EVERY_S
+                # 세션 쿠키는 바퀴마다 메인 클라이언트에서 복사(재로그인 반영)
+                client = httpx.Client(headers=self.client.headers, cookies=self.client.cookies,
+                                      timeout=12.0, follow_redirects=True)
+                try:
+                    for t in self.targets:
+                        try:
+                            self._sweep_cafe(db, client, t, deep)
+                        except Exception as e:
+                            self.log(f"  ! 순회 실패 [{t.name}]: {e}")
+                finally:
+                    client.close()
+                if deep:
+                    last_deep = time.time()
+                    db.set_meta("sweep_last_deep", str(last_deep))
+            except Exception as e:      # 스레드가 죽지 않게 — 무엇이든 기록 후 계속
+                self.log(f"  ! 순회 루프 오류: {e}")
+                time.sleep(60)
+                continue
             time.sleep(self.SWEEP_REST_S)
 
-    def _sweep_cafe(self, db: Database, client, t: CafeTarget):
-        cutoff = (time.time() - self.SWEEP_DAYS * 86400) * 1000
-        page, hits, miss, errs = 1, 0, 0, 0
-        while page <= 3000:
+    def _sweep_cafe(self, db: Database, client, t: CafeTarget, deep: bool = False):
+        import json
+        days = self.DEEP_DAYS if deep else self.SWEEP_DAYS
+        max_pages = self.DEEP_MAX_PAGES if deep else 3000
+        cutoff = (time.time() - days * 86400) * 1000
+        today = time.strftime("%Y%m%d")
+        started = time.time()
+        page, hits, miss, gone, errs = 1, 0, 0, 0, 0
+        while page <= max_pages:
             time.sleep(self.SWEEP_GAP_S)
             try:
                 arts = cafe_api.fetch_article_list(t.cafe_id, menu_id=0, per_page=50,
@@ -594,16 +617,29 @@ class Watcher:
                 self.log(f"  ⟳ SWEEP [{t.name}][{aid}] {why} 변동 → 즉시 재방문")
             for a in missing:
                 self._sweep_missing.put((t, a))
+            # 목록에서 사라진 글: 같은 날 한 번만 재방문 예약(삭제·비공개 전환 확인)
+            recent = (time.time() - self.SWEEP_DAYS * 86400) * 1000
+            dated0 = [a.write_ts for a in arts if a.write_ts and not a.is_notice]
+            for aid in (db.sweep_gone(t.cafe_id, arts) if dated0 and min(dated0) >= recent else []):
+                db.enqueue_revisit_now(t.cafe_id, aid, phase=f"gone{today}")
+                gone += 1
             hits += len(changed)
             miss += len(missing)
             dated = [a.write_ts for a in arts if a.write_ts and not a.is_notice]
             if not arts or len(arts) < 50 or (dated and min(dated) < cutoff):
                 break
             page += 1
-        self.log(f"  ⟳ SWEEP [{t.name}] 1바퀴 완료 {page}p · 변동 {hits} · 누락 {miss}")
+        kind = "깊은순회" if deep else "순회"
+        self.log(f"  ⟳ SWEEP [{t.name}] {kind} 완료 {page}p · 변동 {hits} · 누락 {miss} · 사라짐확인 {gone}")
+        db.set_meta(f"sweep_last_{t.cafe_id}", json.dumps({
+            "name": t.name, "finished": time.time(), "secs": round(time.time() - started),
+            "pages": page, "changed": hits, "missing": miss, "gone": gone,
+            "deep": deep, "errors": errs}, ensure_ascii=False))
 
     def _drain_sweep_missing(self):
-        """순회에서 발견한 미수집 글을 메인 루프에서 조금씩 수집(본문·댓글·업체매칭)."""
+        """순회에서 발견한 미수집 글을 메인 루프에서 조금씩 수집(본문·댓글·업체매칭).
+        겸사겸사 순회 스레드가 살아있는지 확인해 죽었으면 다시 띄운다."""
+        self._start_sweep()
         for _ in range(self.SWEEP_MISSING_PER_CYCLE):
             try:
                 t, a = self._sweep_missing.get_nowait()

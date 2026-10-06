@@ -319,7 +319,8 @@ class Database:
                           ("image_count", "INTEGER"), ("content_len", "INTEGER"),
                           ("body_changed", "INTEGER DEFAULT 0"),    # 작성 후 본문 수정 감지
                           ("comment_edited", "INTEGER DEFAULT 0"),  # 기존 댓글 내용 수정 감지
-                          ("sweep_cmt", "INTEGER")):                # 목록순회 때 본 댓글수(변동 감지 기준)
+                          ("sweep_cmt", "INTEGER"),                 # 목록순회 때 본 댓글수(변동 감지 기준)
+                          ("sweep_sum", "TEXT")):                   # 목록순회 때 본 본문앞부분 해시(본문수정 감지)
             if col not in cols:
                 self.conn.execute(f"ALTER TABLE articles ADD COLUMN {col} {decl}")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_articles_dup ON articles (cafe_id, member_key, content_hash)")
@@ -760,7 +761,7 @@ class Database:
             return [], []
         ph = ",".join("?" * len(live))
         rows = {r["article_id"]: r for r in self.conn.execute(
-            f"""SELECT article_id, current_title, status, sweep_cmt FROM articles
+            f"""SELECT article_id, current_title, status, sweep_cmt, sweep_sum FROM articles
                 WHERE cafe_id=? AND article_id IN ({ph})""",
             [cafe_id] + [a.article_id for a in live])}
         changed, missing = [], []
@@ -776,21 +777,53 @@ class Database:
                 why.append("제목")
             if r["sweep_cmt"] is not None and a.comment_count != r["sweep_cmt"]:
                 why.append(f"댓글{r['sweep_cmt']}→{a.comment_count}")
-            if r["sweep_cmt"] != a.comment_count:
-                self.conn.execute("UPDATE articles SET sweep_cmt=? WHERE cafe_id=? AND article_id=?",
-                                  (a.comment_count, cafe_id, a.article_id))
+            # 본문 앞부분(목록 summary)이 바뀌면 본문 수정 — 제목·댓글은 그대로 두고 본문만 고친 경우
+            sh = (hashlib.sha256(_norm_text(a.summary).encode("utf-8")).hexdigest()[:16]
+                  if getattr(a, "summary", "") else None)
+            if sh and r["sweep_sum"] is not None and sh != r["sweep_sum"]:
+                why.append("본문")
+            if r["sweep_cmt"] != a.comment_count or (sh and sh != r["sweep_sum"]):
+                self.conn.execute(
+                    "UPDATE articles SET sweep_cmt=?, sweep_sum=COALESCE(?, sweep_sum) WHERE cafe_id=? AND article_id=?",
+                    (a.comment_count, sh, cafe_id, a.article_id))
             if why:
                 changed.append((a.article_id, ",".join(why)))
         self.conn.commit()
         return changed, missing
 
-    def enqueue_revisit_now(self, cafe_id: int, article_id: int, tag: str = "sweep"):
-        """즉시 재방문 예약 (목록순회에서 변동을 본 글)."""
+    def enqueue_revisit_now(self, cafe_id: int, article_id: int, tag: str = "sweep",
+                            phase: str | None = None):
+        """즉시 재방문 예약 (목록순회에서 변동을 본 글). phase를 주면 같은 phase는 1번만."""
         ts = now_ms()
         self.conn.execute(
             "INSERT OR IGNORE INTO revisit_schedule (cafe_id, article_id, phase, due_at) VALUES (?,?,?,?)",
-            (cafe_id, article_id, f"{tag}{ts}", ts))
+            (cafe_id, article_id, phase or f"{tag}{ts}", ts))
         self.conn.commit()
+
+    def sweep_gone(self, cafe_id: int, arts) -> list:
+        """목록 한 페이지의 작성시각 구간 안에 있어야 할 활성 글이 목록에 없으면 반환.
+        (삭제·비공개 전환 등 — 재방문으로 실제 상태 확인)"""
+        live = [a for a in arts if a.write_ts and not a.is_notice]
+        if len(live) < 3:
+            return []
+        lo, hi = min(a.write_ts for a in live), max(a.write_ts for a in live)
+        seen = {a.article_id for a in arts}
+        return [r[0] for r in self.conn.execute(
+            """SELECT article_id FROM articles
+               WHERE cafe_id=? AND status='active' AND write_ts>? AND write_ts<?""",
+            (cafe_id, lo, hi)) if r[0] not in seen]
+
+    def revisit_health(self) -> dict:
+        """재방문 대기열 상태: 밀린 건수·가장 오래 밀린 시간·최근 1시간 처리량."""
+        now = now_ms()
+        r = self.conn.execute(
+            """SELECT COUNT(*), MIN(r.due_at) FROM revisit_schedule r
+               JOIN articles a ON a.cafe_id=r.cafe_id AND a.article_id=r.article_id
+               WHERE r.done=0 AND r.due_at<=? AND a.status='active'""", (now,)).fetchone()
+        done = self.conn.execute(
+            "SELECT COUNT(*) FROM revisit_schedule WHERE done=1 AND checked_at>?", (now - 3600_000,)).fetchone()[0]
+        return {"overdue": r[0], "oldest_overdue_min": round((now - r[1]) / 60000) if r[1] else 0,
+                "done_last_hour": done}
 
     # ── 재방문 스케줄 ──────────────────────────────────────────────────────
 

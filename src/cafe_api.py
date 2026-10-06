@@ -208,6 +208,7 @@ class ArticleSummary:
     is_notice: bool
     blinded: bool
     has_image: bool
+    summary: str = ""          # 목록 API의 본문 앞부분 (본문 수정 감지용)
 
     @property
     def url(self) -> str:
@@ -359,6 +360,7 @@ def _to_summary_boardlist(it: dict[str, Any]) -> ArticleSummary:
         is_notice=bool(it.get("noticeArticle", False)),
         blinded=bool(it.get("blindArticle", False)),
         has_image=bool(it.get("hasImage", False)),
+        summary=it.get("summary") or "",
     )
 
 

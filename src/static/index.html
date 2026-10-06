@@ -190,6 +190,7 @@
   <span id="hd-session" class="badge badge-red">세션 없음</span>
   <span id="hd-count" class="badge badge-blue">0건</span>
   <span id="hd-watcher" class="badge badge-red">감시 중지</span>
+  <span id="hd-sweep" class="badge badge-blue" style="cursor:help" title="목록순회·재방문 상태">순회 확인중</span>
   <div class="spacer"></div>
   <button class="btn-success" id="btn-watcher-toggle" onclick="toggleWatcher()">▶ 감시 시작</button>
   <button class="btn-secondary" onclick="openCompanyModal()">📊 업체 현황</button>
@@ -698,6 +699,23 @@ async function pollSessionLive() {
   } catch (e) { /* 네트워크 일시 오류 무시 */ }
 }
 setInterval(pollSessionLive, 60000);
+
+// 감시 누락 방지 상태 (목록순회 주기·재방문 지연) — 이상 시 빨간 배지
+async function pollWatchHealth() {
+  const el = document.getElementById('hd-sweep'); if (!el) return;
+  try {
+    const d = await fetch('/api/watch/health').then(r => r.json());
+    const agos = (d.cafes||[]).map(c => c.ago_min).filter(x => x != null);
+    const worst = agos.length ? Math.max(...agos) : null;
+    el.textContent = d.ok ? `🛰 순회 정상 (${worst==null?'-':worst+'분 전'})` : `⚠ 감시 점검 필요`;
+    el.className = 'badge ' + (d.ok ? 'badge-green' : 'badge-red');
+    el.title = (d.cafes||[]).map(c => `${c.name}: ${c.ago_min==null?"기록없음":c.ago_min+"분 전"} · 변동 ${c.changed??"-"} · 누락 ${c.missing??"-"} · 사라짐 ${c.gone??"-"}${c.deep?" (깊은순회)":""}`).join("\n")
+      + `\n재방문 대기 ${d.revisit.overdue}건 (최대 ${d.revisit.oldest_overdue_min}분 지연) · 최근1시간 처리 ${d.revisit.done_last_hour}건`
+      + (d.warn && d.warn.length ? "\n\n⚠ " + d.warn.join("\n⚠ ") : "");
+  } catch (e) {}
+}
+pollWatchHealth();
+setInterval(pollWatchHealth, 60000);
 
 function updateWatcherBadge(running) {
   const el = document.getElementById('hd-watcher');

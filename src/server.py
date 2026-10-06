@@ -1689,6 +1689,30 @@ def session_status(live: bool = False):
             "accounts": accounts, "pending": SESSION_MGR.has_pending_capture()}
 
 
+@app.get("/api/watch/health")
+def watch_health():
+    """감시 누락 방지 상태: 카페별 마지막 목록순회 + 재방문 대기열 지연.
+    warn 이 있으면 대시보드 상단에 경고 표시."""
+    import json as _json, time as _t
+    db = _db()
+    try:
+        cafes, warn = [], []
+        for c in _load_config().get("cafes", []):
+            raw = db.get_meta(f"sweep_last_{c['cafe_id']}")
+            info = _json.loads(raw) if raw else {}
+            ago = round((_t.time() - info["finished"]) / 60) if info.get("finished") else None
+            cafes.append({"cafe_id": c["cafe_id"], "name": c.get("name", ""), "ago_min": ago, **info})
+            if ago is None or ago > 300:      # 5시간 넘게 순회 안 됨
+                warn.append(f"{c.get('name', c['cafe_id'])} 목록순회 {'기록없음' if ago is None else str(ago // 60) + '시간 지연'}")
+        rv = db.revisit_health()
+        if rv["oldest_overdue_min"] > 180:
+            warn.append(f"재방문 {rv['overdue']}건 밀림(최대 {rv['oldest_overdue_min'] // 60}시간)")
+        return {"ok": not warn, "warn": warn, "cafes": cafes, "revisit": rv,
+                "running": STATE.get("running")}
+    finally:
+        db.close()
+
+
 _HEALTH_CACHE = {"ts": 0.0, "ok": None, "since": None}
 
 @app.get("/api/session/health")
