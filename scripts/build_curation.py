@@ -46,11 +46,17 @@ def normalize_name(n):
     return n
 
 
+# 카페 소재지 — 본문에 주소가 없을 때 마지막 수단으로 쓴다(2026-10-21).
+# 맘카페 회원 추천은 대부분 그 동네 가게라, 지역 미상으로 버리는 것보다 낫다.
+CAFE_SIGUNGU = {21031223: "김해시", 14793916: "창원시"}
+JUNK_NAME = re.compile(r"(^[^가-힣a-zA-Z]*$|^.$|입니다$|^이요$|아시는\s*분|잘\s*봤|^오호|쓰릅|^\W)")
+
+
 def build(db):
     # genuine=0(전문후기/광고성 계정) body 언급은 애초에 제외하고 집계
     rows = db.execute(
         """SELECT category, subcategory, raw_name, region, sigungu, address,
-                  write_ts, cur_read, cur_comment, promo_flag, source, level_weight
+                  write_ts, cur_read, cur_comment, promo_flag, source, level_weight, cafe_id
            FROM place_mention
            WHERE category IS NOT NULL AND promo_flag=0
              AND (source='comment' OR genuine=1)""").fetchall()
@@ -58,7 +64,8 @@ def build(db):
     # 댓글 추천은 sigungu가 없다(댓글 텍스트만으로는 지역 특정 불가).
     # 같은 상호가 본문에서 언급된 적 있으면 그 지역으로 귀속시킨다(가장 많이 쓰인 지역).
     name_sigungu_votes = {}
-    for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw in rows:
+    rows = [r for r in rows if not JUNK_NAME.search(normalize_name(r[2]) or "")]
+    for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw, _cid in rows:
         if source != "comment" and sigungu:
             name = normalize_name(raw)
             v = name_sigungu_votes.setdefault(name, {})
@@ -66,10 +73,10 @@ def build(db):
     name_best_sigungu = {n: max(v, key=v.get) for n, v in name_sigungu_votes.items()}
 
     agg = {}
-    for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw in rows:
+    for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw, cid in rows:
         name = normalize_name(raw)
-        if source == "comment" and not sigungu:
-            sigungu = name_best_sigungu.get(name)
+        if not sigungu:
+            sigungu = name_best_sigungu.get(name) or CAFE_SIGUNGU.get(cid)
         key = (cat, name, sigungu or "")
         d = agg.setdefault(key, {"subcats": {}, "region": None, "addr": None,
                                   "mentions": 0, "body": 0, "crec": 0,
