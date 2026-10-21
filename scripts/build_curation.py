@@ -46,10 +46,54 @@ def normalize_name(n):
     return n
 
 
+def name_key(n):
+    """같은 가게 판정용 키 — '더로드 101'/'더로드101', '키즈까페'/'키즈카페'를 한 곳으로."""
+    return re.sub(r"[\s·.\-_]", "", normalize_name(n)).lower().replace("까페", "카페")
+
+
 # 카페 소재지 — 본문에 주소가 없을 때 마지막 수단으로 쓴다(2026-10-21).
 # 맘카페 회원 추천은 대부분 그 동네 가게라, 지역 미상으로 버리는 것보다 낫다.
 CAFE_SIGUNGU = {21031223: "김해시", 14793916: "창원시"}
 JUNK_NAME = re.compile(r"(^[^가-힣a-zA-Z]*$|^.$|입니다$|^이요$|아시는\s*분|잘\s*봤|^오호|쓰릅|^\W|\?|~!|^(근처|에서|이요|고기집|북면)$)")
+
+
+def merge_variants(agg):
+    """'귀산 더로드101'·'샤브20 무한리필'·'샤브20 양덕점'처럼 대표 이름을 품은 변형을
+    같은 지역의 대표 이름으로 합친다. 대표는 키 4자 이상·언급 3회 이상인 것만
+    (짧은 이름이 남의 가게를 흡수하지 않도록)."""
+    bases = sorted([k for k, d in agg.items() if len(k[1]) >= 4 and d["mentions"] >= 3],
+                   key=lambda k: -agg[k]["mentions"])
+    merged = 0
+    for k in list(agg):
+        if k not in agg:
+            continue
+        cat, nk, sg = k
+        for b in bases:
+            if b == k or b not in agg or b[0] != cat or b[2] != sg:
+                continue
+            short, long_ = sorted((b[1], nk), key=len)
+            if len(short) < 4 or short not in long_:
+                continue
+            # 언급이 많은 쪽을 대표로 남긴다
+            keep, drop = (b, k) if agg[b]["mentions"] >= agg[k]["mentions"] else (k, b)
+            src, dst = agg.pop(drop), agg[keep]
+            for f in ("mentions", "body", "crec", "read", "cmt", "score"):
+                dst[f] += src[f]
+            for f in ("subcats", "names"):
+                for n, c in src[f].items():
+                    if f == "subcats" or keep == b:
+                        dst[f][n] = dst[f].get(n, 0) + (c if f == "subcats" else 0)
+            for f, fn in (("first", min), ("last", max)):
+                if src[f] is not None:
+                    dst[f] = src[f] if dst[f] is None else fn(dst[f], src[f])
+            dst["region"] = dst["region"] or src["region"]
+            dst["addr"] = dst["addr"] or src["addr"]
+            merged += 1
+            if drop == k:
+                break
+            k = keep
+    print(f"변형 이름 병합: {merged:,}건")
+    return agg
 
 
 def build(db):
@@ -67,22 +111,24 @@ def build(db):
     rows = [r for r in rows if not JUNK_NAME.search(normalize_name(r[2]) or "")]
     for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw, _cid in rows:
         if source != "comment" and sigungu:
-            name = normalize_name(raw)
+            name = name_key(raw)
             v = name_sigungu_votes.setdefault(name, {})
             v[sigungu] = v.get(sigungu, 0) + 1
     name_best_sigungu = {n: max(v, key=v.get) for n, v in name_sigungu_votes.items()}
 
     agg = {}
     for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw, cid in rows:
-        name = normalize_name(raw)
+        name = name_key(raw)
         if not sigungu:
             sigungu = name_best_sigungu.get(name) or CAFE_SIGUNGU.get(cid)
         key = (cat, name, sigungu or "")
-        d = agg.setdefault(key, {"subcats": {}, "region": None, "addr": None,
+        d = agg.setdefault(key, {"names": {}, "subcats": {}, "region": None, "addr": None,
                                   "mentions": 0, "body": 0, "crec": 0,
                                   "read": 0, "cmt": 0, "score": 0.0,
                                   "first": wts, "last": wts})
         d["mentions"] += 1
+        disp = normalize_name(raw)
+        d["names"][disp] = d["names"].get(disp, 0) + 1
         d["read"] += read or 0
         d["cmt"] += cmt or 0
         if wts:
@@ -100,8 +146,10 @@ def build(db):
             d["region"] = region
         if not d["addr"] and addr:
             d["addr"] = addr
+    agg = merge_variants(agg)
     db.execute("DELETE FROM place")
-    for (cat, name, sigungu), d in agg.items():
+    for (cat, _k, sigungu), d in agg.items():
+        name = max(d["names"], key=d["names"].get)   # 가장 많이 쓰인 표기
         subcat = max(d["subcats"], key=d["subcats"].get) if d["subcats"] else None
         db.execute(
             """INSERT OR IGNORE INTO place
