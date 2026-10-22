@@ -37,6 +37,11 @@ def schema(db):
         UNIQUE(category, name, sigungu)
     );
     """)
+    for col in ("verified INT DEFAULT 0", "naver_name TEXT", "naver_category TEXT"):
+        try:
+            db.execute(f"ALTER TABLE place ADD COLUMN {col}")
+        except sqlite3.OperationalError:
+            pass
     db.commit()
 
 
@@ -57,7 +62,7 @@ CAFE_SIGUNGU = {21031223: "김해시", 14793916: "창원시"}
 JUNK_NAME = re.compile(r"(^[^가-힣a-zA-Z]*$|^.$|입니다$|^이요$|아시는\s*분|잘\s*봤|^오호|쓰릅|^\W|\?|~!|^(근처|에서|이요|고기집|북면)$)")
 
 
-def merge_variants(agg):
+def merge_variants(agg, verified=None):
     """'귀산 더로드101'·'샤브20 무한리필'·'샤브20 양덕점'처럼 대표 이름을 품은 변형을
     같은 지역의 대표 이름으로 합친다. 대표는 키 4자 이상·언급 3회 이상인 것만
     (짧은 이름이 남의 가게를 흡수하지 않도록)."""
@@ -69,7 +74,8 @@ def merge_variants(agg):
             continue
         cat, nk, sg = k
         for b in bases:
-            if b == k or b not in agg or b[0] != cat or b[2] != sg:
+            # 지역이 다르면 다른 가게 — 단, 네이버로 확인된 대표는 지역 추정이 틀린 변형도 흡수
+            if b == k or b not in agg or b[0] != cat or (b[2] != sg and b[1] not in (verified or {})):
                 continue
             short, long_ = sorted((b[1], nk), key=len)
             if len(short) < 4 or short not in long_:
@@ -116,10 +122,23 @@ def build(db):
             v[sigungu] = v.get(sigungu, 0) + 1
     name_best_sigungu = {n: max(v, key=v.get) for n, v in name_sigungu_votes.items()}
 
+    # 네이버 지역검색으로 확인된 가게는 그 주소의 시군구를 정답으로 쓴다
+    verified = {}
+    try:
+        for k, title, addr, ncat in db.execute(
+                "SELECT name_key, api_title, api_addr, api_category FROM place_verify2 WHERE found=1"):
+            m = re.match(r"경상남도\s+(\S+시)(?:\s+(\S+구))?", addr or "")
+            if m:
+                verified[k] = (" ".join(x for x in m.groups() if x), title, addr, ncat)
+    except sqlite3.OperationalError:
+        pass
+
     agg = {}
     for cat, subcat, raw, region, sigungu, addr, wts, read, cmt, promo, source, lw, cid in rows:
         name = name_key(raw)
-        if not sigungu:
+        if name in verified:
+            sigungu = verified[name][0]
+        elif not sigungu:
             sigungu = name_best_sigungu.get(name) or CAFE_SIGUNGU.get(cid)
         key = (cat, name, sigungu or "")
         d = agg.setdefault(key, {"names": {}, "subcats": {}, "region": None, "addr": None,
@@ -146,7 +165,7 @@ def build(db):
             d["region"] = region
         if not d["addr"] and addr:
             d["addr"] = addr
-    agg = merge_variants(agg)
+    agg = merge_variants(agg, verified)
     db.execute("DELETE FROM place")
     for (cat, _k, sigungu), d in agg.items():
         name = max(d["names"], key=d["names"].get)   # 가장 많이 쓰인 표기
@@ -160,6 +179,11 @@ def build(db):
             (cat, subcat, name, sigungu, d["region"], d["addr"], d["mentions"],
              d["body"], d["crec"], d["read"], d["cmt"], round(d["score"], 2),
              d["first"], d["last"]))
+        v = verified.get(_k)
+        if v:
+            db.execute("""UPDATE place SET verified=1, naver_name=?, address=?, naver_category=?
+                          WHERE category=? AND name=? AND sigungu=?""",
+                       (v[1], v[2], v[3], cat, name, sigungu))
     db.commit()
     return len(agg)
 
