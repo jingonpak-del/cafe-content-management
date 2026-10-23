@@ -1252,15 +1252,57 @@ def _run_sup_backfill(group_id):
 
 @app.post("/api/companies/mapping")
 async def add_company_mapping(req: dict):
-    naver_id = (req.get("naver_id") or "").strip()
+    """업체 매핑 등록 — 아이디 또는 멤버태그로.
+    등록 즉시 각 카페 회원관리에서 그 사람을 찾아 member_key 를 확보(company_member resolved)하고
+    기존 게시글에도 업체명을 소급 반영한다. 멤버태그는 카페마다 다르므로 찾은 카페에만 등록.
+    key_type: id(기본) | tag"""
+    key = (req.get("key") or req.get("naver_id") or "").strip()
+    key_type = (req.get("key_type") or "id").strip()
     company_name = (req.get("company_name") or "").strip()
-    if not naver_id or not company_name:
-        return JSONResponse({"error": "naver_id and company_name required"}, status_code=400)
+    if not key or not company_name:
+        return JSONResponse({"error": "아이디(또는 멤버태그)와 업체명을 입력하세요"}, status_code=400)
+    key = key.lstrip("#").lower() if key_type == "tag" else key.lower()
+    from . import cafe_api
+    cfg = _load_config()
+    account_id = cfg.get("account_id")
+    cookies = SESSION_MGR.load_cookies(account_id) if account_id and SESSION_MGR.verify(account_id).ok else None
+    if not cookies:
+        return JSONResponse({"error": "로그인 세션이 필요합니다 (설정에서 로그인)"}, status_code=400)
+    client = cafe_api.make_client(cookies)
+    names = _cafe_names()
     db = _db()
+    found = []
     try:
-        db.upsert_company_mapping(naver_id, company_name)
-        return {"ok": True}
+        cafe_ids = [c["cafe_id"] for c in cfg.get("cafes", []) + cfg.get("stat_cafes", [])]
+        # 아이디는 기존처럼 업체 마스터에도 올려 시트 연동 규칙과 같게 관리
+        reg_id = key if key_type == "id" else f"tag:{key}"
+        if key_type == "id":
+            db.upsert_company_master(key, company_name, 800000 + int(time.time()) % 100000)
+        for cid in cafe_ids:
+            try:
+                if key_type == "id":
+                    m = cafe_api.find_member_by_id(cid, key, client)
+                else:
+                    ms = cafe_api.search_members(cid, key, id_type=3, per_page=10, client=client)
+                    m = next((x for x in ms if (x.member_tag or "").lower() == key), None)
+            except Exception:
+                m = None
+            if m and m.member_key:
+                db.enqueue_member_resolution(reg_id, company_name, [cid])
+                db.save_member_resolution(reg_id, cid, m, company_name, "resolved")
+                n = db.conn.execute("SELECT COUNT(*) FROM articles WHERE cafe_id=? AND member_key=?",
+                                    (cid, m.member_key)).fetchone()[0]
+                found.append({"cafe": names.get(cid, str(cid)), "nickname": m.nickname,
+                              "member_tag": m.member_tag, "articles": n})
+            elif key_type == "id":
+                db.enqueue_member_resolution(reg_id, company_name, [cid])
+                db.save_member_resolution(reg_id, cid, None, company_name, "not_member")
+            time.sleep(0.3)
+        if found or key_type == "id":       # 어디서도 못 찾은 멤버태그는 목록에 남기지 않음
+            db.upsert_company_mapping(reg_id, company_name)
+        return {"ok": True, "found": found}
     finally:
+        client.close()
         db.close()
 
 

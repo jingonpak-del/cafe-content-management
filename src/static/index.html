@@ -1976,17 +1976,20 @@ async function openMappingEdit() {
   const body = document.getElementById('company-box-body');
   body.innerHTML = `
     <div style="margin-bottom:12px">
-      <div style="font-size:12px;color:#93c5fd;margin-bottom:8px">업체-ID 매핑 (네이버ID → 업체명)</div>
+      <div style="font-size:12px;color:#93c5fd;margin-bottom:8px">업체 매핑 (네이버ID 또는 멤버태그 → 업체명) — 등록 즉시 카페에서 회원을 찾아 게시글에 반영</div>
       <div class="form-row" style="margin-bottom:8px">
-        <input class="form-input" id="map-id" type="text" placeholder="네이버 ID">
+        <select class="form-input" id="map-type" style="width:auto">
+          <option value="id">아이디</option><option value="tag">멤버태그</option>
+        </select>
+        <input class="form-input" id="map-id" type="text" placeholder="네이버 ID 또는 멤버태그(예: v7u2juifhzn0)">
         <input class="form-input" id="map-company" type="text" placeholder="업체명">
         <button class="btn-success" onclick="addMapping()">+ 추가</button>
       </div>
     </div>
     <table class="data-table">
-      <thead><tr><th>네이버 ID</th><th>업체명</th><th>동기화</th></tr></thead>
+      <thead><tr><th>아이디 / 멤버태그</th><th>업체명</th><th>등록</th></tr></thead>
       <tbody>${rows.map(r => `<tr>
-        <td>${esc(r.naver_id)}</td>
+        <td>${r.naver_id.startsWith('tag:') ? '<span style="color:#fbbf24">#'+esc(r.naver_id.slice(4))+'</span> <span style="color:#666;font-size:11px">(멤버태그)</span>' : esc(r.naver_id)}</td>
         <td><span class="company-badge">${esc(r.company_name)}</span></td>
         <td style="color:#555;font-size:11px">${r.synced_at ? new Date(r.synced_at).toLocaleString('ko') : '-'}</td>
       </tr>`).join('')}</tbody>
@@ -1994,11 +1997,15 @@ async function openMappingEdit() {
 }
 
 async function addMapping() {
-  const naver_id = document.getElementById('map-id').value.trim();
+  const key = document.getElementById('map-id').value.trim();
+  const key_type = document.getElementById('map-type').value;
   const company_name = document.getElementById('map-company').value.trim();
-  if (!naver_id || !company_name) return;
-  await fetch('/api/companies/mapping', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({naver_id, company_name})});
-  showToast('매핑 추가 완료');
+  if (!key || !company_name) { showToast('아이디(또는 멤버태그)와 업체명을 입력하세요'); return; }
+  showToast('카페에서 회원 찾는 중...');
+  const d = await fetch('/api/companies/mapping', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key, key_type, company_name})}).then(r=>r.json());
+  if (d.error) { showToast('오류: ' + d.error); return; }
+  if (!d.found.length) showToast(`'${key}' 를 어느 카페에서도 찾지 못했습니다 (${key_type==='tag'?'멤버태그':'아이디'} 확인)`);
+  else showToast('매핑 완료 · ' + d.found.map(f => `${f.cafe} ${f.nickname}(글 ${f.articles})`).join(' / '));
   openMappingEdit();
 }
 
