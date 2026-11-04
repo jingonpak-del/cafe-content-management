@@ -219,9 +219,13 @@ class Watcher:
         # 세션 없으면 조회 불가
         if not self.session_ok:
             return None, None
+        if self._studio_blocked():
+            return None, None
         try:
             self._throttle()
             m = cafe_api.resolve_member_by_key(cafe_id, member_key, nickname, self.client)
+        except cafe_api.StudioAuthRequired:
+            return None, None          # 본인인증 전 — 실패로 캐시하지 않음(인증 후 다시 조회)
         except Exception:
             m = None
         if m:
@@ -525,9 +529,14 @@ class Watcher:
         except Exception as e:
             self.log(f"  ! 시트 동기화 실패: {e}")
 
+    def _studio_blocked(self) -> bool:
+        """카페 스튜디오 본인인증이 없어 회원검색이 막힌 상태면 10분간 시도 안 함."""
+        st = cafe_api.STUDIO_STATE
+        return bool(st.get("need_auth")) and (time.time() - st.get("at", 0)) < 600
+
     def _resolve_some(self):
         """매 사이클 pending 회원을 소량씩 해석 (백그라운드 점진 처리)."""
-        if not self.session_ok:
+        if not self.session_ok or self._studio_blocked():
             return
         try:
             from .company_matcher import resolve_pending
@@ -660,6 +669,8 @@ class Watcher:
         if not self.session_ok:
             return
         if (time.monotonic() - self._last_notmember_retry) < self._notmember_gap:
+            return
+        if self._studio_blocked():
             return
         self._last_notmember_retry = time.monotonic()
         try:

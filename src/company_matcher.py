@@ -81,6 +81,9 @@ def resolve_pending(db: Database, client: httpx.Client, batch: int = 20,
             else:
                 db.save_member_resolution(naver_id, cafe_id, None, company, "not_member")
             done += 1
+        except cafe_api.StudioAuthRequired:
+            # 카페 스튜디오 본인인증 전 — pending 그대로 두고 이번 배치 중단(미가입 기록 금지)
+            break
         except Exception as e:
             log(f"  ! 해석 실패 {naver_id}@{cafe_id}: {e}")
         time.sleep(min_gap_s)

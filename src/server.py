@@ -105,7 +105,9 @@ def _cafe_names() -> dict[int, str]:
     out = {c["cafe_id"]: c.get("name") or c.get("cafe_url", "") for c in cfg.get("cafes", [])}
     # 통계 전용 카페(크롤 안 함)도 이름 표시
     for c in cfg.get("stat_cafes", []):
-        out.setdefault(c["cafe_id"], (c.get("name") or c.get("cafe_url", "")) + " (통계전용)")
+        # crawled=True 면 기간 크롤(scripts/crawl_cafe_period.py)로 글을 받아둔 카페 → 통계전용 아님
+        out.setdefault(c["cafe_id"], (c.get("name") or c.get("cafe_url", ""))
+                       + ("" if c.get("crawled") else " (통계전용)"))
     return out
 
 
@@ -680,6 +682,8 @@ async def sup_members_bulk(group_id: int, req: dict):
                     continue
                 try:
                     members = cafe_api.search_members(cid, kw, id_type=id_type, per_page=10, client=client)
+                except cafe_api.StudioAuthRequired:
+                    raise   # 본인인증 미완료 → 미가입 처리 금지, 상위 핸들러가 안내
                 except Exception:
                     members = []
                 for m in members:
@@ -1285,6 +1289,8 @@ async def add_company_mapping(req: dict):
                 else:
                     ms = cafe_api.search_members(cid, key, id_type=3, per_page=10, client=client)
                     m = next((x for x in ms if (x.member_tag or "").lower() == key), None)
+            except cafe_api.StudioAuthRequired:
+                raise   # 본인인증 미완료 → 미가입 처리 금지, 상위 핸들러가 안내
             except Exception:
                 m = None
             if m and m.member_key:
@@ -1338,7 +1344,12 @@ async def writers_search(req: dict):
                         "member_key": m.member_key, "member_tag": m.member_tag,
                         "nickname": m.nickname, "masked_id": m.masked_id,
                         "level_name": m.level_name,
+                        # 아이디 검색이면 검색어 자체가 실제 네이버 아이디 → 저장해두면
+                        # 나중에 다른 카페에서 같은 사람을 아이디로 정확히 재검색할 수 있다.
+                        "naver_id": keyword if id_type == cafe_api.IDTYPE_ID else "",
                     })
+            except cafe_api.StudioAuthRequired:
+                raise   # 본인인증 미완료 → 미가입 처리 금지, 상위 핸들러가 안내
             except Exception:
                 continue
     finally:
@@ -1393,11 +1404,14 @@ async def writers_add_bulk(req: dict):
                     continue
                 try:
                     members = cafe_api.search_members(cid, kw, id_type=id_type, per_page=10, client=client)
+                except cafe_api.StudioAuthRequired:
+                    raise   # 본인인증 미완료 → 미가입 처리 금지, 상위 핸들러가 안내
                 except Exception:
                     members = []
                 for m in members:
+                    nid = kw if id_type == cafe_api.IDTYPE_ID else ""
                     db.add_watched_writer(
-                        cid, m.member_key, "", m.nickname, m.masked_id,
+                        cid, m.member_key, nid, m.nickname, m.masked_id,
                         m.member_tag, m.level_name, "", group_id=group_id,
                     )
                     registered += 1
@@ -1731,6 +1745,45 @@ def session_status(live: bool = False):
             "accounts": accounts, "pending": SESSION_MGR.has_pending_capture()}
 
 
+STUDIO_AUTH_MSG = ("네이버 카페 스튜디오 본인 인증이 필요합니다. 회원관리가 새 '카페 스튜디오'로 옮겨져, "
+                   "운영진 계정(snowgreent)으로 studio.cafe.naver.com 에서 본인 인증을 한 번 해 주세요.")
+
+
+from .cafe_api import StudioAuthRequired as _StudioAuthRequired  # noqa: E402
+
+
+@app.exception_handler(_StudioAuthRequired)
+async def _studio_auth_handler(request, exc):
+    return JSONResponse({"error": STUDIO_AUTH_MSG, "studio_auth": False}, status_code=400)
+
+
+_STUDIO_CACHE = {"at": 0.0, "status": "?"}
+
+
+def _studio_status() -> str:
+    import time as _t
+    if _t.time() - _STUDIO_CACHE["at"] < 600:
+        return _STUDIO_CACHE["status"]
+    from . import cafe_api
+    acc = _load_config().get("account_id")
+    st = "?"
+    if acc and SESSION_MGR.verify(acc).ok:
+        cl = cafe_api.make_client(SESSION_MGR.load_cookies(acc))
+        try:
+            st = cafe_api.studio_auth_status(cl)
+        finally:
+            cl.close()
+    _STUDIO_CACHE.update(at=_t.time(), status=st)
+    return st
+
+
+@app.get("/api/studio/status")
+def studio_status(refresh: int = 0):
+    if refresh:
+        _STUDIO_CACHE["at"] = 0
+    return {"status": _studio_status()}
+
+
 @app.get("/api/watch/health")
 def watch_health():
     """감시 누락 방지 상태: 카페별 마지막 목록순회 + 재방문 대기열 지연.
@@ -1761,9 +1814,13 @@ def watch_health():
                     c_["waiting"] = True
             warn = [w for w in warn if not any(w.startswith(str(c_["name"])) and c_.get("waiting") for c_ in cafes)]
         rv = db.revisit_health()
+        # 카페 스튜디오 본인인증(회원검색·업체매칭에 필요) — 10분 캐시
+        st = _studio_status()
+        if st != "VERIFIED":
+            warn.append("카페 스튜디오 본인인증 필요 — 업체·멤버 조회 중단 (studio.cafe.naver.com 에서 인증)")
         if rv["oldest_overdue_min"] > 180:
             warn.append(f"재방문 {rv['overdue']}건 밀림(최대 {rv['oldest_overdue_min'] // 60}시간)")
-        return {"ok": not warn, "warn": warn, "cafes": cafes, "revisit": rv,
+        return {"ok": not warn, "warn": warn, "cafes": cafes, "revisit": rv, "studio": st,
                 "running": STATE.get("running")}
     finally:
         db.close()

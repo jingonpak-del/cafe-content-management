@@ -105,32 +105,77 @@ def _parse_member(cafe_id: int, m: dict[str, Any]) -> CafeMember:
     )
 
 
+# ── 카페 스튜디오 회원관리 (2026-10-28 네이버 이전) ──────────────────────────
+# 옛 ManageMemberListViewAjax.nhn 은 CAFE_STUDIO_MOVED 를 돌려준다. 새 API 는
+# 운영진 '본인 인증(pii-auth)' 이 된 세션에서만 회원 목록을 준다(미인증 시 403 0040116).
+STUDIO_API = "https://apis.cafe.naver.com/cafe-manage/cafe-manage/v1"
+STUDIO_SEARCH_TYPE = {IDTYPE_ID: "MEMBER_ID", IDTYPE_NICK: "NICKNAME", IDTYPE_TAG: "MEMBER_TAG"}
+#: 마지막 회원검색 시 본인인증 필요 여부 (대시보드 경고·오류 문구용)
+STUDIO_STATE: dict[str, Any] = {"need_auth": False, "at": 0.0, "message": ""}
+
+
+class StudioAuthRequired(RuntimeError):
+    """카페 스튜디오 본인 인증이 안 된 세션 — 회원검색 불가(미가입으로 기록하면 안 됨)."""
+
+
+def _studio_headers() -> dict[str, str]:
+    return {"Referer": "https://studio.cafe.naver.com/", "Origin": "https://studio.cafe.naver.com"}
+
+
+def studio_auth_status(client: httpx.Client) -> str:
+    """VERIFIED | NOT_VERIFIED | ? — 카페 스튜디오 본인 인증 상태."""
+    try:
+        r = client.get(f"{STUDIO_API}/pii-auth/status", headers=_studio_headers(), timeout=10)
+        return (r.json() or {}).get("status") or "?"
+    except Exception:
+        return "?"
+
+
+def _parse_studio_member(cafe_id: int, m: dict[str, Any]) -> CafeMember:
+    import html as _html
+    lvl = m.get("memberLevel")
+    lvl_name = m.get("memberLevelName") or (lvl.get("name") if isinstance(lvl, dict) else "") or ""
+    return CafeMember(
+        cafe_id=cafe_id,
+        member_key=m.get("memberKey") or m.get("memberkey") or "",
+        member_tag=m.get("memberTag") or "",
+        nickname=m.get("nickname") or m.get("nickName") or "",
+        masked_id=m.get("maskedMemberId") or m.get("maskId") or m.get("memberId") or "",
+        level_name=_html.unescape(lvl_name),
+        manager=bool(m.get("manager", False)),
+        staff=bool(m.get("staff", False)),
+    )
+
+
 def search_members(
     cafe_id: int, keyword: str, id_type: int = IDTYPE_ID,
     per_page: int = 10, page: int = 1, client: httpx.Client | None = None,
 ) -> list[CafeMember]:
-    """회원 검색. id_type: 0=아이디, 1=닉네임, 3=멤버태그.
-    아이디 검색은 '전체 아이디'로만 정확 매칭됨 (부분검색 불가).
-    매니저 권한이 없으면 빈 리스트를 반환할 수 있음."""
-    from urllib.parse import quote
+    """회원 검색. id_type: 0=아이디, 1=닉네임, 3=멤버태그. (카페 스튜디오 API)
+    본인 인증이 안 된 세션이면 StudioAuthRequired 를 던진다 — 호출 측은 이를
+    '회원 없음'으로 처리하면 안 된다."""
+    import time as _t
     own = client is None
     client = client or make_client()
     try:
-        data = {
-            "search.clubid": cafe_id,
-            "search.searchType": 1,
-            "search.basic.idType": id_type,
-            "search.basic.keyword": quote(keyword),   # 서버가 이중인코딩을 기대
-            "search.perPage": per_page,
-            "search.page": page,
-            "search.sortType": 0,
-            "search.sortOrder": 0,
-            "search.paginationCached": "false",
-            "search.totalCountCached": 0,
-        }
-        r = client.post(MANAGE_MEMBER_URL, data=data, headers=_manage_headers(cafe_id), timeout=15)
-        members = r.json().get("result", {}).get("members", [])
-        return [_parse_member(cafe_id, m) for m in members]
+        params = {"page": page, "perPage": 30 if per_page <= 30 else 50,
+                  "activityStopFilter": "ALL",
+                  "searchType": STUDIO_SEARCH_TYPE.get(id_type, "NICKNAME"), "keyword": keyword}
+        r = client.get(f"{STUDIO_API}/cafes/{cafe_id}/members/list", params=params,
+                       headers=_studio_headers(), timeout=15)
+        try:
+            j = r.json() or {}
+        except Exception:
+            j = {}
+        if r.status_code in (401, 403):
+            msg = j.get("detail") or "카페 스튜디오 본인 인증이 필요합니다"
+            STUDIO_STATE.update(need_auth=True, at=_t.time(), message=msg)
+            raise StudioAuthRequired(msg)
+        r.raise_for_status()
+        STUDIO_STATE.update(need_auth=False, at=_t.time(), message="")
+        data = j.get("result", j)
+        rows = data.get("members") or data.get("memberList") or data.get("items") or []
+        return [_parse_studio_member(cafe_id, m) for m in rows]
     finally:
         if own:
             client.close()
@@ -154,6 +199,8 @@ def resolve_member_by_key(cafe_id: int, member_key: str, nickname: str,
         return None
     try:
         members = search_members(cafe_id, nickname, id_type=IDTYPE_NICK, per_page=30, client=client)
+    except StudioAuthRequired:
+        raise
     except Exception:
         return None
     for m in members:
