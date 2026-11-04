@@ -142,8 +142,8 @@ def _parse_studio_member(cafe_id: int, m: dict[str, Any]) -> CafeMember:
         nickname=m.get("nickname") or m.get("nickName") or "",
         masked_id=m.get("maskedMemberId") or m.get("maskId") or m.get("memberId") or "",
         level_name=_html.unescape(lvl_name),
-        manager=bool(m.get("manager", False)),
-        staff=bool(m.get("staff", False)),
+        manager=bool(m.get("isManager") or m.get("isViceManager") or m.get("manager", False)),
+        staff=bool(m.get("isStaff") or m.get("staff", False)),
     )
 
 
