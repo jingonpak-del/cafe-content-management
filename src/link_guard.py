@@ -6,7 +6,9 @@
 
 - 마산맘·김해줌마 최신글 목록을 30초마다 보고 댓글 수가 바뀐 글의 댓글을 읽는다
   (메인 감시가 나중에 모은 댓글도 DB 에서 같이 훑는다)
-- 차단 도메인(link_block) 또는 .info 링크 댓글 → 그 계정 활동정지 + 그 계정의 광고 링크 댓글 전부 삭제
+- 자동 차단 도메인(link_block.auto=1: da24·replyalba) 댓글 → 그 계정 활동정지 + 그 계정의 해당 댓글 전부 삭제
+- 그 밖에 수상한 링크(.info, 단축링크, auto=0 차단 도메인) 댓글은 link_flag 에 '확인 대기'로만 쌓고
+  사람이 화면에서 [삭제+정지] 를 눌러야 처리한다 (제휴업체·필요한 글일 수 있음, 11-05 사용자 지시)
 - 업체 등록 계정·게시판 스탭·상생업체·운영진은 건드리지 않는다
 - 차단 후보(같은 외부 도메인을 3개 글 이상에 단 계정)는 화면에만 보여 주고 사람이 도메인을 추가한다
 """
@@ -28,6 +30,10 @@ SEED_BLOCK = {
     "da24.co.kr": "이사 비교 제휴링크(유주엄미)",
     "replyalba.com": "댓글 알바 모집",
 }
+# 단축링크 — 뒤에 뭐가 있는지 사람이 확인해야 한다
+SHORT_DOMAINS = {"buly.kr", "bit.ly", "han.gl", "url.kr", "me2.do", "vo.la", "tinyurl.com", "t.ly", "is.gd",
+                 "cutt.ly", "shorturl.at", "rebrand.ly", "goo.gl", "t.co", "c11.kr", "zrr.kr", "lrl.kr",
+                 "abit.ly", "abr.ge", "link24.kr", "muz.so"}
 URL_RE = re.compile(r"(?:https?://)?((?:[a-z0-9-]+\.)+[a-z]{2,})(/[^\s]*)?", re.I)
 EXEMPT_LEVEL_RE = re.compile(r"스탭|상생|매니저|운영")
 # 회원끼리 흔히 공유하는 링크(핫딜·이벤트·지도) — 후보 집계에서 뺀다
@@ -35,7 +41,7 @@ SHARE_RE = re.compile(
     r"(^|\.)(naver\.com|naver\.me|youtube\.com|youtu\.be|instagram\.com|kakao\.com|daum\.net|"
     r"go\.kr|or\.kr|ac\.kr|toss\.[a-z]+|tossbank\.com|kakaopay\.com|kakaobank\.io|coupang\.com|"
     r"cjonstyle\.com|11st\.co\.kr|gmarket\.co\.kr|auction\.co\.kr|ssg\.com|ssg\.li|lotteon\.com|"
-    r"musinsa\.com|oliveyoung\.co\.kr|facebook\.com|x\.com|daangn\.com|kko\.to)$")
+    r"musinsa\.com|oliveyoung\.co\.kr|facebook\.com|x\.com|daangn\.com|kko\.to|maps\.app\.goo\.gl)$")
 
 
 def ensure_tables(db: Database):
@@ -51,9 +57,20 @@ def ensure_tables(db: Database):
         detail TEXT, created_at INTEGER, updated_at INTEGER,
         UNIQUE(cafe_id, member_key)
     );
+    CREATE TABLE IF NOT EXISTS link_flag (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cafe_id INTEGER, article_id INTEGER, comment_id INTEGER, menu_id INTEGER,
+        member_key TEXT, nickname TEXT, domain TEXT, content TEXT, article_title TEXT,
+        status TEXT DEFAULT 'pending', created_at INTEGER, decided_at INTEGER,
+        UNIQUE(cafe_id, article_id, comment_id)
+    );
     """)
+    if "auto" not in {r[1] for r in db.conn.execute("PRAGMA table_info(link_block)")}:
+        db.conn.execute("ALTER TABLE link_block ADD COLUMN auto INTEGER DEFAULT 0")
     for d, note in SEED_BLOCK.items():
-        db.conn.execute("INSERT OR IGNORE INTO link_block VALUES(?,?,?)", (d, note, int(time.time() * 1000)))
+        db.conn.execute("INSERT OR IGNORE INTO link_block(domain, note, added_at, auto) VALUES(?,?,?,1)",
+                        (d, note, int(time.time() * 1000)))
+        db.conn.execute("UPDATE link_block SET auto=1 WHERE domain=?", (d,))
     db.conn.commit()
 
 
@@ -69,11 +86,26 @@ def domains_in(text: str) -> list[str]:
     return out
 
 
-def blocked_domain(text: str, blocklist: set[str]) -> str | None:
+def _match(d: str, doms) -> bool:
+    return any(d == b or d.endswith("." + b) for b in doms)
+
+
+def classify(text: str, auto: set[str], flag: set[str]) -> tuple[str, str] | None:
+    """('auto', 도메인) = 바로 처리, ('flag', 도메인) = 표시만, None = 정상."""
+    hit = None
     for d in domains_in(text):
-        if d.endswith(".info") or any(d == b or d.endswith("." + b) for b in blocklist):
-            return d
-    return None
+        if _match(d, auto):
+            return "auto", d
+        if not hit and not SHARE_RE.search(d) and (d.endswith(".info") or _match(d, flag) or _match(d, SHORT_DOMAINS)):
+            hit = ("flag", d)
+    return hit
+
+
+def load_block(db: Database) -> tuple[set[str], set[str]]:
+    auto, flag = set(), set()
+    for d, a in db.conn.execute("SELECT domain, auto FROM link_block"):
+        (auto if a else flag).add(d)
+    return auto, flag
 
 
 def delete_comment(client: httpx.Client, cafe_id: int, menu_id: int, article_id: int,
@@ -94,8 +126,9 @@ class LinkGuard:
 
     def tick(self, db: Database, client: httpx.Client):
         ensure_tables(db)
-        block = {r[0] for r in db.conn.execute("SELECT domain FROM link_block")}
+        auto, flag = load_block(db)
         hits: dict[tuple[int, str], dict] = {}
+        flags = []
         for cafe_id, name in CAFES:
             arts = cafe_api.fetch_article_list(cafe_id, menu_id=0, per_page=50, client=client)
             for a in arts:
@@ -109,27 +142,59 @@ class LinkGuard:
                 if not a.comment_count:
                     continue
                 for c in cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=5):
-                    d = None if c.is_deleted else blocked_domain(c.content, block)
-                    if d and c.member_key:
+                    k2 = None if c.is_deleted or not c.member_key else classify(c.content, auto, flag)
+                    if not k2:
+                        continue
+                    if k2[0] == "auto":
                         h = hits.setdefault((cafe_id, c.member_key),
                                             {"nick": c.writer_nickname, "domains": set(), "extra": {}})
-                        h["domains"].add(d)
+                        h["domains"].add(k2[1])
                         h["extra"][(a.article_id, c.comment_id)] = a.menu_id
+                    else:
+                        flags.append((cafe_id, a.article_id, c.comment_id, a.menu_id, c.member_key,
+                                      c.writer_nickname, k2[1], c.content, a.title))
                 time.sleep(0.4)
             if len(self.cc) > 3000:
                 self.cc = dict(list(self.cc.items())[-1500:])
         # 메인 감시가 모은 댓글(재방문 등)
         since = self.db_mark or int(time.time() * 1000) - 3600 * 1000
-        for cafe_id, mk, nick, content in db.conn.execute(
-                f"""SELECT cafe_id, member_key, writer_nickname, content FROM comments
-                    WHERE cafe_id IN ({",".join(str(c) for c, _ in CAFES)}) AND crawled_at > ?
-                      AND is_deleted=0 AND content LIKE '%.%'""", (since,)).fetchall():
-            d = blocked_domain(content, block)
-            if d and mk:
-                hits.setdefault((cafe_id, mk), {"nick": nick, "domains": set(), "extra": {}})["domains"].add(d)
+        for cafe_id, aid, cid, mk, nick, content, menu_id, title in db.conn.execute(
+                f"""SELECT c.cafe_id, c.article_id, c.comment_id, c.member_key, c.writer_nickname, c.content,
+                           a.menu_id, a.title FROM comments c
+                    LEFT JOIN articles a ON a.cafe_id=c.cafe_id AND a.article_id=c.article_id
+                    WHERE c.cafe_id IN ({",".join(str(c) for c, _ in CAFES)}) AND c.crawled_at > ?
+                      AND c.is_deleted=0 AND c.content LIKE '%.%'""", (since,)).fetchall():
+            k2 = classify(content, auto, flag) if mk else None
+            if k2 and k2[0] == "auto":
+                hits.setdefault((cafe_id, mk), {"nick": nick, "domains": set(), "extra": {}})["domains"].add(k2[1])
+            elif k2:
+                flags.append((cafe_id, aid, cid, menu_id, mk, nick, k2[1], content, title))
         self.db_mark = int(time.time() * 1000)
         for (cafe_id, mk), h in hits.items():
-            self.punish(db, client, cafe_id, mk, h["nick"], h["domains"], block, h["extra"])
+            self.punish(db, client, cafe_id, mk, h["nick"], h["domains"],
+                        lambda t: any(_match(d, auto) for d in domains_in(t)), h["extra"])
+        self.add_flags(db, flags)
+
+    def add_flags(self, db: Database, flags: list):
+        """수상한 링크 댓글은 '확인 대기'로만 쌓는다. 한 번 올린 댓글(허용·처리 포함)은 다시 올리지 않는다."""
+        new = 0
+        now = int(time.time() * 1000)
+        for f in flags:
+            cafe_id, mk = f[0], f[4]
+            if self.exempt(db, cafe_id, mk):
+                continue
+            r = db.conn.execute("SELECT released FROM link_spam_action WHERE cafe_id=? AND member_key=?",
+                                (cafe_id, mk)).fetchone()
+            if r and r[0]:
+                continue
+            cur = db.conn.execute(
+                """INSERT OR IGNORE INTO link_flag(cafe_id, article_id, comment_id, menu_id, member_key, nickname,
+                       domain, content, article_title, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""", (*f, now))
+            if cur.rowcount:
+                new += 1
+                self.w.log(f"  ⚠ 수상한 링크 댓글 [{dict(CAFES).get(cafe_id)}] {f[5]} ({f[6]}) — 확인 대기")
+        if new:
+            db.conn.commit()
 
     def exempt(self, db: Database, cafe_id: int, mk: str) -> str | None:
         if db.conn.execute("SELECT 1 FROM company_member WHERE cafe_id=? AND member_key=? AND status='resolved'",
@@ -141,20 +206,21 @@ class LinkGuard:
             return r[0]
         return None
 
-    def punish(self, db, client, cafe_id, mk, nick, domains, block, extra=None):
-        if self.exempt(db, cafe_id, mk):
-            return
+    def punish(self, db, client, cafe_id, mk, nick, domains, is_target, extra=None, force=False):
+        """활동정지 + 이 계정 댓글 중 is_target(본문) 이 참인 것 전부 삭제. force=사람이 승인한 경우."""
+        if not force and self.exempt(db, cafe_id, mk):
+            return 0, 0, 0
         prev = db.conn.execute("SELECT id, stopped, released FROM link_spam_action WHERE cafe_id=? AND member_key=?",
                                (cafe_id, mk)).fetchone()
-        if prev and prev["released"]:          # 사람이 해제한 계정은 다시 건드리지 않는다
-            return
+        if prev and prev["released"] and not force:   # 사람이 해제한 계정은 다시 건드리지 않는다
+            return 0, 0, 0
         # 이 계정이 단 광고 링크 댓글 전부(DB 기록 기준) 삭제
         rows = db.conn.execute(
             """SELECT c.article_id, c.comment_id, c.content, a.menu_id FROM comments c
                LEFT JOIN articles a ON a.cafe_id=c.cafe_id AND a.article_id=c.article_id
                WHERE c.cafe_id=? AND c.member_key=? AND c.is_deleted=0""", (cafe_id, mk)).fetchall()
         targets = {(r["article_id"], r["comment_id"]): r["menu_id"] for r in rows
-                   if blocked_domain(r["content"], block)}
+                   if is_target(r["content"])}
         for k, m in (extra or {}).items():      # 방금 목록에서 본 댓글(아직 DB 에 없을 수 있음)
             targets.setdefault(k, m)
         ok = fail = 0
@@ -215,12 +281,29 @@ class LinkGuard:
             name = dict(CAFES).get(cafe_id, cafe_id)
             self.w.log(f"  🔗 광고링크 댓글 차단 [{name}] {nick} ({doms}) — 댓글 삭제 {ok}"
                        + (f" 실패 {fail}" if fail else "") + f" · 정지 {'O' if stopped else 'X'}{note}")
+        return ok, fail, stopped
+
+    def approve(self, db, client, cafe_id, mk):
+        """사람이 [삭제+정지] 승인: 확인 대기 댓글 + 이 계정의 같은 도메인 댓글 삭제, 활동정지."""
+        rows = db.conn.execute("SELECT * FROM link_flag WHERE cafe_id=? AND member_key=? AND status='pending'",
+                               (cafe_id, mk)).fetchall()
+        if not rows:
+            return None
+        doms = {r["domain"] for r in rows}
+        extra = {(r["article_id"], r["comment_id"]): r["menu_id"] for r in rows}
+        res = self.punish(db, client, cafe_id, mk, rows[0]["nickname"], doms,
+                          lambda t: any(_match(d, doms) for d in domains_in(t)), extra, force=True)
+        db.conn.execute("UPDATE link_flag SET status='approved', decided_at=? WHERE cafe_id=? AND member_key=? "
+                        "AND status='pending'", (int(time.time() * 1000), cafe_id, mk))
+        db.conn.execute("UPDATE link_spam_action SET released=0 WHERE cafe_id=? AND member_key=?", (cafe_id, mk))
+        db.conn.commit()
+        return res
 
 
 def candidates(db: Database, days: int = 60) -> list[dict]:
     """차단 후보: 같은 외부 도메인을 3개 글 이상에 단 계정(면제·공유링크·이미 차단 제외)."""
     ensure_tables(db)
-    block = {r[0] for r in db.conn.execute("SELECT domain FROM link_block")}
+    auto, flag = load_block(db)
     since = int((time.time() - days * 86400) * 1000)
     agg = defaultdict(lambda: defaultdict(set))
     nick = {}
@@ -231,7 +314,7 @@ def candidates(db: Database, days: int = 60) -> list[dict]:
         if not mk:
             continue
         for d in domains_in(ct):
-            if SHARE_RE.search(d) or blocked_domain("http://" + d, block):
+            if SHARE_RE.search(d) or classify("http://" + d, auto, flag):
                 continue
             agg[(cafe_id, mk)][d].add(aid)
             nick[(cafe_id, mk)] = nk

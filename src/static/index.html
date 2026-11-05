@@ -719,10 +719,10 @@ async function pollScam() {
   const el = document.getElementById('hd-scam'); if (!el) return;
   try {
     const d = scamData = await fetch('/api/scam/status').then(r => r.json());
-    const n = d.new_selfdel + d.new_actions + (d.new_links || 0);
+    const n = d.new_selfdel + d.new_actions + (d.new_links || 0) + (d.pending_links || 0);
     const dead = d.guard_ago_s == null || d.guard_ago_s > 300;
     el.textContent = dead ? '🛡 사기글 감시 멈춤'
-      : n ? `🚨 사기글 ${d.new_actions} · 링크댓글 ${d.new_links || 0} · 자삭 ${d.new_selfdel}` : '🛡 사기글 감시 정상';
+      : n ? `🚨 사기글 ${d.new_actions} · 링크댓글 ${d.new_links || 0} · 확인대기 ${d.pending_links || 0} · 자삭 ${d.new_selfdel}` : '🛡 사기글 감시 정상';
     el.className = 'badge ' + (dead || n ? 'badge-red' : 'badge-green');
   } catch (e) {}
 }
@@ -731,7 +731,7 @@ setInterval(pollScam, 30000);
 
 async function openScamPanel() {
   const d = scamData || {actions: [], selfdel: []};
-  let L = {actions: [], block: [], candidates: []};
+  let L = {actions: [], block: [], flags: [], candidates: []};
   try { L = await fetch('/api/linkspam/status').then(r => r.json()); } catch (e) {}
   const t = ms => ms ? new Date(ms).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
   const acts = d.actions.map(a => `<tr style="${a.new?'background:#fff3f3':''}">
@@ -752,6 +752,15 @@ async function openScamPanel() {
       <td>${a.deleted}개${a.delete_fail ? ` <b style="color:#c00">실패 ${a.delete_fail}</b>` : ''} · 정지 ${a.stopped ? 'O' : 'X'}</td>
       <td>${a.released ? '해제됨' : `<button class="btn-secondary" onclick="linkRelease(${a.id})">정지 해제</button>`}</td></tr>`).join('')
     || '<tr><td colspan="6" style="color:#888">처리 내역 없음</td></tr>';
+  const byMk = {};
+  (L.flags || []).forEach(f => { (byMk[f.cafe_id + '|' + f.member_key] ||= []).push(f); });
+  const flagRows = Object.values(byMk).map(fs => `<tr>
+      <td>${t(fs[0].created_at)}</td><td>${esc(fs[0].cafe_name)}</td><td><b>${esc(fs[0].nickname||'')}</b><br><small>${fs.length}개</small></td>
+      <td>${fs.map(f => `<div style="margin-bottom:4px"><a href="#" onclick="openDetail(${f.cafe_id},${f.article_id});return false">${esc((f.article_title||'').slice(0,30))}</a>
+        <span class="badge badge-blue">${esc(f.domain)}</span><br><small style="color:#555">${esc((f.content||'').slice(0,120))}</small></div>`).join('')}</td>
+      <td style="white-space:nowrap"><button class="btn-danger" onclick="linkFlag(${fs[0].cafe_id},'${esc(fs[0].member_key)}','approve')">삭제+정지</button><br>
+        <button class="btn-secondary" style="margin-top:4px" onclick="linkFlag(${fs[0].cafe_id},'${esc(fs[0].member_key)}','dismiss')">괜찮음</button></td></tr>`).join('')
+    || '<tr><td colspan="5" style="color:#888">확인 대기 없음</td></tr>';
   const cands = L.candidates.map(c => `<tr><td>${esc(c.cafe_name)}</td><td>${esc(c.nickname)}</td><td>${esc(c.domain)}</td><td>${c.articles}</td>
       <td><small>${esc(Object.entries(c.domains).map(([k, v]) => k + ' ' + v).join(', '))}</small></td>
       <td><button class="btn-secondary" onclick="linkBlock('${esc(c.domain)}')">도메인 차단</button></td></tr>`).join('')
@@ -767,11 +776,15 @@ async function openScamPanel() {
       <h4>자동 차단 (글 삭제 + 활동정지)</h4>
       <p style="font-size:12px;color:#666;margin:0 0 6px">잘못 지운 글은 카페 관리 &gt; 삭제글 보기에서 복구, 정지는 [정지 해제] 버튼.</p>
       <table class="tbl" style="width:100%;font-size:13px"><tr><th>시각</th><th>카페</th><th>제목·근거</th><th>작성자</th><th>결과</th><th></th></tr>${acts}</table>
-      <h4>광고 링크 댓글 계정 (마산맘·김해 전체 게시판)</h4>
-      <p style="font-size:12px;color:#666;margin:0 0 6px">차단 도메인이나 .info 링크 댓글을 달면 계정 활동정지 + 그 계정의 광고 링크 댓글 전부 삭제. 업체 등록 계정·게시판 스탭·상생업체는 제외.</p>
+      <h4>⚠ 확인 대기 링크 댓글 ${Object.keys(byMk).length}명</h4>
+      <p style="font-size:12px;color:#666;margin:0 0 6px">.info·단축링크·확인 도메인 댓글은 표시만 합니다. [삭제+정지] = 이 계정의 그 링크 댓글 전부 삭제 + 활동정지, [괜찮음] = 그대로 둠.</p>
+      <table class="tbl" style="width:100%;font-size:13px"><tr><th>발견</th><th>카페</th><th>닉네임</th><th>댓글</th><th></th></tr>${flagRows}</table>
+      <h4>광고 링크 댓글 처리 내역 (마산맘·김해 전체 게시판)</h4>
+      <p style="font-size:12px;color:#666;margin:0 0 6px">🔴 자동 도메인 댓글은 바로 활동정지 + 댓글 삭제, 그 밖은 위에서 승인한 것만. 업체 등록 계정·게시판 스탭·상생업체는 제외.</p>
       <table class="tbl" style="width:100%;font-size:13px"><tr><th>처리</th><th>카페</th><th>닉네임</th><th>도메인</th><th>댓글 삭제</th><th></th></tr>${linkActs}</table>
-      <div style="margin:8px 0">차단 도메인: ${L.block.map(b => `<span class="badge badge-blue" title="${esc(b.note||'')}">${esc(b.domain)} <a href="#" onclick="linkBlock('${esc(b.domain)}',1);return false">✕</a></span>`).join(' ')} <span class="badge badge-blue">*.info (항상)</span>
-        <input id="lb-domain" placeholder="도메인 추가 (예: abc.co.kr)" style="width:200px"> <button class="btn-secondary" onclick="linkBlock(document.getElementById('lb-domain').value)">추가</button></div>
+      <div style="margin:8px 0">도메인: ${L.block.map(b => `<span class="badge ${b.auto?'badge-red':'badge-blue'}" title="${b.auto?'자동 처리':'확인 대기'} ${esc(b.note||'')}">${b.auto?'🔴 ':''}${esc(b.domain)} <a href="#" onclick="linkBlock('${esc(b.domain)}',1);return false">✕</a></span>`).join(' ')} <span class="badge badge-blue">*.info·단축링크 (확인 대기)</span>
+        <input id="lb-domain" placeholder="도메인 추가 (예: abc.co.kr)" style="width:200px"> <button class="btn-secondary" onclick="linkBlock(document.getElementById('lb-domain').value)">확인 대기로 추가</button>
+        <button class="btn-danger" onclick="linkBlock(document.getElementById('lb-domain').value,0,1)">자동 처리로 추가</button></div>
       <details><summary>차단 후보 ${L.candidates.length}명 — 같은 외부 링크를 3개 글 이상에 단 계정 (확인 후 도메인 추가)</summary>
       <table class="tbl" style="width:100%;font-size:13px"><tr><th>카페</th><th>닉네임</th><th>주 도메인</th><th>글 수</th><th>전체 도메인</th><th></th></tr>${cands}</table></details>
       <h4>작성자가 스스로 지운 등업글 (최근 7일)</h4>
@@ -782,13 +795,22 @@ async function scamAck() {
   await fetch('/api/scam/ack', {method: 'POST'});
   await pollScam(); openScamPanel();
 }
-async function linkBlock(domain, remove) {
+async function linkBlock(domain, remove, auto) {
   if (!domain) return;
-  if (!confirm(remove ? `${domain} 차단을 풀까요?` : `${domain} 링크 댓글을 다는 계정을 앞으로 자동 정지·댓글 삭제할까요?`)) return;
+  if (!confirm(remove ? `${domain} 를 목록에서 뺄까요?` : auto ? `${domain} 링크 댓글은 앞으로 바로 정지·삭제할까요?`
+    : `${domain} 링크 댓글을 확인 대기로 표시할까요?`)) return;
   const r = await fetch('/api/linkspam/block', {method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({domain, remove: !!remove})}).then(r => r.json());
+    body: JSON.stringify({domain, remove: !!remove, auto: !!auto})}).then(r => r.json());
   if (r.error) alert(r.error);
   openScamPanel();
+}
+async function linkFlag(cafe_id, member_key, action) {
+  if (action === 'approve' && !confirm('이 계정의 해당 링크 댓글을 모두 삭제하고 활동정지할까요?')) return;
+  const r = await fetch('/api/linkspam/flag', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cafe_id, member_key, action})}).then(r => r.json());
+  if (r.error) alert(r.error);
+  else if (action === 'approve') alert(`댓글 삭제 ${r.deleted}개${r.fail ? ' · 실패 ' + r.fail : ''} · 정지 ${r.stopped ? 'O' : 'X'}`);
+  await pollScam(); openScamPanel();
 }
 async function linkRelease(id) {
   if (!confirm('이 계정의 활동정지를 해제할까요? (이후 이 계정은 자동 처리하지 않습니다)')) return;

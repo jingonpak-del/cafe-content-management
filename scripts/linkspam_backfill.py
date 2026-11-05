@@ -23,13 +23,14 @@ def main():
     db = Database(ROOT / "data" / "gamsi.db")
     db.conn.execute("PRAGMA busy_timeout=30000")
     L.ensure_tables(db)
-    block = {r[0] for r in db.conn.execute("SELECT domain FROM link_block")}
+    auto, _ = L.load_block(db)     # 자동 차단 도메인만 (나머지는 화면에서 확인 후 승인)
     g = L.LinkGuard(_W())
     hits = defaultdict(lambda: {"nick": "", "domains": set()})
     for cid, mk, nk, ct in db.conn.execute(
             "SELECT cafe_id, member_key, writer_nickname, content FROM comments "
             "WHERE cafe_id IN (14793916, 21031223) AND is_deleted=0 AND content LIKE '%.%'"):
-        d = L.blocked_domain(ct, block)
+        k = L.classify(ct, auto, set())
+        d = k and k[0] == "auto" and k[1]
         if d and mk and not g.exempt(db, cid, mk):
             hits[(cid, mk)]["nick"] = nk
             hits[(cid, mk)]["domains"].add(d)
@@ -38,7 +39,8 @@ def main():
         return
     client = cafe_api.make_client(SessionManager(ROOT / "data" / "sessions").load_cookies("snowgreent"))
     for (cid, mk), h in hits.items():
-        g.punish(db, client, cid, mk, h["nick"], h["domains"], block)
+        g.punish(db, client, cid, mk, h["nick"], h["domains"],
+                lambda t: any(L._match(x, auto) for x in L.domains_in(t)))
     print("완료", flush=True)
 
 

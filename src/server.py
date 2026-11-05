@@ -1824,8 +1824,9 @@ def scam_status():
         from . import link_guard
         link_guard.ensure_tables(db)
         new_links = db.conn.execute("SELECT COUNT(*) FROM link_spam_action WHERE created_at > ?", (ack,)).fetchone()[0]
+        pending_links = db.conn.execute("SELECT COUNT(DISTINCT cafe_id || member_key) FROM link_flag WHERE status='pending'").fetchone()[0]
         return {"guard_ago_s": int(_t.time() - at) if at else None,
-                "selfdel": selfdel, "actions": acts, "new_links": new_links,
+                "selfdel": selfdel, "actions": acts, "new_links": new_links, "pending_links": pending_links,
                 "new_selfdel": sum(r["new"] for r in selfdel),
                 "new_actions": sum(r["new"] for r in acts)}
     finally:
@@ -1879,8 +1880,13 @@ def linkspam_status():
                       created_at, updated_at FROM link_spam_action ORDER BY updated_at DESC LIMIT 200""")]
         for r in acts:
             r["cafe_name"] = names.get(r["cafe_id"], "")
-        block = [dict(r) for r in db.conn.execute("SELECT domain, note, added_at FROM link_block ORDER BY added_at DESC")]
-        return {"actions": acts, "block": block, "candidates": link_guard.candidates(db)}
+        block = [dict(r) for r in db.conn.execute("SELECT domain, note, added_at, auto FROM link_block ORDER BY added_at DESC")]
+        flags = [dict(r) for r in db.conn.execute(
+            """SELECT id, cafe_id, article_id, comment_id, member_key, nickname, domain, content, article_title, created_at
+               FROM link_flag WHERE status='pending' ORDER BY created_at DESC LIMIT 300""")]
+        for r in flags:
+            r["cafe_name"] = names.get(r["cafe_id"], "")
+        return {"actions": acts, "block": block, "flags": flags, "candidates": link_guard.candidates(db)}
     finally:
         db.close()
 
@@ -1899,10 +1905,41 @@ def linkspam_block(body: dict):
         if body.get("remove"):
             db.conn.execute("DELETE FROM link_block WHERE domain=?", (d,))
         else:
-            db.conn.execute("INSERT OR REPLACE INTO link_block VALUES(?,?,?)",
-                            (d, body.get("note") or "", int(_t.time() * 1000)))
+            db.conn.execute("INSERT OR REPLACE INTO link_block(domain, note, added_at, auto) VALUES(?,?,?,?)",
+                            (d, body.get("note") or "", int(_t.time() * 1000), 1 if body.get("auto") else 0))
         db.conn.commit()
         return {"ok": True, "domain": d}
+    finally:
+        db.close()
+
+
+@app.post("/api/linkspam/flag")
+def linkspam_flag(body: dict):
+    """확인 대기 링크 댓글 처리 {cafe_id, member_key, action: approve(삭제+정지)|dismiss(괜찮음)}."""
+    from . import cafe_api, link_guard
+    import time as _t
+    cafe_id, mk = int(body.get("cafe_id") or 0), body.get("member_key") or ""
+    db = _db()
+    try:
+        link_guard.ensure_tables(db)
+        if body.get("action") == "dismiss":
+            n = db.conn.execute("UPDATE link_flag SET status='dismissed', decided_at=? WHERE cafe_id=? AND member_key=? "
+                                "AND status='pending'", (int(_t.time() * 1000), cafe_id, mk)).rowcount
+            db.conn.commit()
+            return {"ok": True, "dismissed": n}
+
+        class _W:
+            def log(self, m):
+                print(m, flush=True)
+        cl = cafe_api.make_client(SESSION_MGR.load_cookies(_load_config().get("account_id")))
+        try:
+            res = link_guard.LinkGuard(_W()).approve(db, cl, cafe_id, mk)
+        finally:
+            cl.close()
+        if res is None:
+            return JSONResponse({"error": "대기 중인 댓글 없음"}, status_code=404)
+        ok, fail, stopped = res
+        return {"ok": True, "deleted": ok, "fail": fail, "stopped": stopped}
     finally:
         db.close()
 
