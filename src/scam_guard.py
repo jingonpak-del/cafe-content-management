@@ -142,6 +142,8 @@ class ScamGuard:
         self.w = watcher
         self.thread: threading.Thread | None = None
         self.seen: dict[tuple[int, int], dict] = {}   # 최근 글 캐시(본문)
+        from .link_guard import LinkGuard
+        self.links = LinkGuard(watcher)
 
     def start(self):
         if self.thread is not None and self.thread.is_alive():
@@ -166,6 +168,10 @@ class ScamGuard:
                         self._check_board(db, client, cafe_id, menu_id, name)
                     except Exception as e:
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
+                try:
+                    self.links.tick(db, client)
+                except Exception as e:
+                    self.w.log(f"  ! 광고링크 댓글 감시 실패: {e}")
                 db.set_meta("scam_guard_at", str(int(time.time())))
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")

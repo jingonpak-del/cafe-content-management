@@ -1821,8 +1821,11 @@ def scam_status():
             r["member_keys"] = _json.loads(r["member_keys"] or "[]")
             r["new"] = r["created_at"] > ack
         at = int(db.get_meta("scam_guard_at") or 0)
+        from . import link_guard
+        link_guard.ensure_tables(db)
+        new_links = db.conn.execute("SELECT COUNT(*) FROM link_spam_action WHERE created_at > ?", (ack,)).fetchone()[0]
         return {"guard_ago_s": int(_t.time() - at) if at else None,
-                "selfdel": selfdel, "actions": acts,
+                "selfdel": selfdel, "actions": acts, "new_links": new_links,
                 "new_selfdel": sum(r["new"] for r in selfdel),
                 "new_actions": sum(r["new"] for r in acts)}
     finally:
@@ -1857,6 +1860,68 @@ def scam_release(action_id: int):
         finally:
             cl.close()
         db.conn.execute("UPDATE scam_action SET released=1 WHERE id=?", (action_id,))
+        db.conn.commit()
+        return {"ok": True, "released": ok, "failures": fails}
+    finally:
+        db.close()
+
+
+@app.get("/api/linkspam/status")
+def linkspam_status():
+    """광고 링크 댓글: 차단 내역 · 차단 도메인 · 후보(같은 도메인 3개 글 이상)."""
+    from . import link_guard
+    db = _db()
+    try:
+        link_guard.ensure_tables(db)
+        names = dict(link_guard.CAFES)
+        acts = [dict(r) for r in db.conn.execute(
+            """SELECT id, cafe_id, member_key, nickname, domains, deleted, delete_fail, stopped, released,
+                      created_at, updated_at FROM link_spam_action ORDER BY updated_at DESC LIMIT 200""")]
+        for r in acts:
+            r["cafe_name"] = names.get(r["cafe_id"], "")
+        block = [dict(r) for r in db.conn.execute("SELECT domain, note, added_at FROM link_block ORDER BY added_at DESC")]
+        return {"actions": acts, "block": block, "candidates": link_guard.candidates(db)}
+    finally:
+        db.close()
+
+
+@app.post("/api/linkspam/block")
+def linkspam_block(body: dict):
+    """차단 도메인 추가/삭제 {domain, note, remove}. 추가하면 다음 확인 때 그 도메인 댓글 계정을 처리."""
+    from . import link_guard
+    import time as _t
+    d = (body.get("domain") or "").strip().lower().removeprefix("https://").removeprefix("http://").removeprefix("www.").split("/")[0]
+    if not d or "." not in d:
+        return JSONResponse({"error": "도메인 형식이 아닙니다"}, status_code=400)
+    db = _db()
+    try:
+        link_guard.ensure_tables(db)
+        if body.get("remove"):
+            db.conn.execute("DELETE FROM link_block WHERE domain=?", (d,))
+        else:
+            db.conn.execute("INSERT OR REPLACE INTO link_block VALUES(?,?,?)",
+                            (d, body.get("note") or "", int(_t.time() * 1000)))
+        db.conn.commit()
+        return {"ok": True, "domain": d}
+    finally:
+        db.close()
+
+
+@app.post("/api/linkspam/{action_id}/release")
+def linkspam_release(action_id: int):
+    """잘못 차단한 계정 활동정지 해제(이후 이 계정은 자동 처리 안 함)."""
+    from . import cafe_api, scam_guard
+    db = _db()
+    try:
+        r = db.conn.execute("SELECT cafe_id, member_key FROM link_spam_action WHERE id=?", (action_id,)).fetchone()
+        if not r:
+            return JSONResponse({"error": "내역 없음"}, status_code=404)
+        cl = cafe_api.make_client(SESSION_MGR.load_cookies(_load_config().get("account_id")))
+        try:
+            ok, fails = scam_guard.release_members(cl, r["cafe_id"], [r["member_key"]])
+        finally:
+            cl.close()
+        db.conn.execute("UPDATE link_spam_action SET released=1 WHERE id=?", (action_id,))
         db.conn.commit()
         return {"ok": True, "released": ok, "failures": fails}
     finally:
