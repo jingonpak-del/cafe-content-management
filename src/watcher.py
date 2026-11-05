@@ -334,6 +334,9 @@ class Watcher:
         self.log(f"Watcher 시작 — 카페: {names}  tick={tick_s}s")
         self.check_session(force=True)
         self._start_sweep()
+        from .scam_guard import ScamGuard
+        self._scam_guard = ScamGuard(self)
+        self._scam_guard.start()
 
         cycle = itertools.cycle(self.targets)
         i = 0

@@ -1784,6 +1784,85 @@ def studio_status(refresh: int = 0):
     return {"status": _studio_status()}
 
 
+# ── 등업게시판 주식 사기글 차단 (scam_guard) ─────────────────────────────
+
+@app.get("/api/scam/status")
+def scam_status():
+    """차단 내역 + 등업게시판 자삭(작성자·네이버 삭제) 알림. ack 이후 것만 new 로 센다."""
+    import json as _json, time as _t
+    from . import scam_guard
+    db = _db()
+    try:
+        scam_guard.ensure_tables(db)
+        ack = int(db.get_meta("scam_selfdel_ack") or 0)
+        boards = scam_guard.GUARD_BOARDS
+        cond = " OR ".join("(a.cafe_id=? AND a.menu_id=?)" for _ in boards)
+        args = [x for c, m, _ in boards for x in (c, m)]
+        names = {c: n for c, _, n in boards}
+        selfdel = [dict(r) for r in db.conn.execute(
+            f"""SELECT a.cafe_id, a.article_id, a.current_title AS title, a.writer_nickname,
+                       a.member_tag, a.write_ts, a.deleted_at, a.delete_type
+                FROM articles a
+                WHERE a.status='deleted' AND COALESCE(a.delete_type,'')!='staff' AND ({cond})
+                  AND a.deleted_at > ?
+                  AND NOT EXISTS (SELECT 1 FROM scam_action s
+                                  WHERE s.cafe_id=a.cafe_id AND s.article_id=a.article_id)
+                ORDER BY a.deleted_at DESC LIMIT 100""",
+            args + [int(_t.time() * 1000) - 7 * 86400000])]
+        for r in selfdel:
+            r["cafe_name"] = names.get(r["cafe_id"], "")
+            r["new"] = r["deleted_at"] > ack
+        acts = [dict(r) for r in db.conn.execute(
+            """SELECT id, cafe_id, article_id, title, writer_nickname, member_keys, reasons,
+                      deleted, stopped, released, result, created_at
+               FROM scam_action ORDER BY id DESC LIMIT 100""")]
+        for r in acts:
+            r["cafe_name"] = names.get(r["cafe_id"], "")
+            r["member_keys"] = _json.loads(r["member_keys"] or "[]")
+            r["new"] = r["created_at"] > ack
+        at = int(db.get_meta("scam_guard_at") or 0)
+        return {"guard_ago_s": int(_t.time() - at) if at else None,
+                "selfdel": selfdel, "actions": acts,
+                "new_selfdel": sum(r["new"] for r in selfdel),
+                "new_actions": sum(r["new"] for r in acts)}
+    finally:
+        db.close()
+
+
+@app.post("/api/scam/ack")
+def scam_ack():
+    import time as _t
+    db = _db()
+    try:
+        db.set_meta("scam_selfdel_ack", str(int(_t.time() * 1000)))
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.post("/api/scam/{action_id}/release")
+def scam_release(action_id: int):
+    """잘못 차단한 건: 활동정지 해제. 글 복구는 카페 관리 > 삭제글 보기에서."""
+    import json as _json
+    from . import cafe_api, scam_guard
+    db = _db()
+    try:
+        r = db.conn.execute("SELECT cafe_id, member_keys FROM scam_action WHERE id=?", (action_id,)).fetchone()
+        if not r:
+            return JSONResponse({"error": "내역 없음"}, status_code=404)
+        acc = _load_config().get("account_id")
+        cl = cafe_api.make_client(SESSION_MGR.load_cookies(acc))
+        try:
+            ok, fails = scam_guard.release_members(cl, r["cafe_id"], _json.loads(r["member_keys"] or "[]"))
+        finally:
+            cl.close()
+        db.conn.execute("UPDATE scam_action SET released=1 WHERE id=?", (action_id,))
+        db.conn.commit()
+        return {"ok": True, "released": ok, "failures": fails}
+    finally:
+        db.close()
+
+
 @app.get("/api/watch/health")
 def watch_health():
     """감시 누락 방지 상태: 카페별 마지막 목록순회 + 재방문 대기열 지연.
