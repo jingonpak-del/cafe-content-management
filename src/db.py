@@ -1686,6 +1686,8 @@ class Database:
             "total":        c("SELECT COUNT(*) FROM articles").fetchone()[0],
             "active":       c("SELECT COUNT(*) FROM articles WHERE status='active'").fetchone()[0],
             # 우측 삭제 탭 배지용: 스탭삭제 제외한 삭제(자삭+미정)
+        elif status_filter == "modified":
+            where.append("(a.body_changed=1 OR a.comment_edited=1)")
             "deleted":      c("SELECT COUNT(*) FROM articles WHERE status='deleted' AND COALESCE(delete_type,'')!='staff'").fetchone()[0],
             "deleted_staff":c("SELECT COUNT(*) FROM articles WHERE delete_type='staff'").fetchone()[0],
             "title_changed":c("SELECT COUNT(*) FROM articles WHERE title_changed=1").fetchone()[0],

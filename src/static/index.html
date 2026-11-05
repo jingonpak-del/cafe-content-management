@@ -219,6 +219,7 @@
         <option value="">전체</option>
         <option value="active">활성</option>
         <option value="deleted">삭제됨</option>
+        <option value="modified">본문·댓글수정</option>
       </select>
     </div>
     <div id="article-list">
@@ -229,10 +230,8 @@
   <!-- 우측: 이상 감지 -->
   <div id="right-panel">
     <div id="right-tabs">
-      <div class="tab active" data-tab="all" onclick="switchTab('all')">전체 <span class="tab-badge" id="cnt-all">0</span></div>
-      <div class="tab" data-tab="title_changed" onclick="switchTab('title_changed')">제목변경 <span class="tab-badge" id="cnt-title">0</span></div>
-      <div class="tab" data-tab="deleted" onclick="switchTab('deleted')">삭제 <span class="tab-badge" id="cnt-del">0</span></div>
-      <div class="tab" data-tab="modified" onclick="switchTab('modified')" title="작성 후 본문 또는 기존 댓글 내용이 바뀐 글">본문·댓글수정 <span class="tab-badge" id="cnt-mod">0</span></div>
+      <!-- 삭제·본문/댓글수정은 좌측 목록 필터로 이동, 우측은 제목변경 중심 -->
+      <div class="tab active" data-tab="title_changed" onclick="switchTab('title_changed')">제목변경 <span class="tab-badge" id="cnt-title">0</span></div>
       <div class="tab" data-tab="duplicate" onclick="switchTab('duplicate')">중복 <span class="tab-badge" id="cnt-dup">0</span></div>
       <div class="tab" data-tab="keyword" onclick="switchTab('keyword')">키워드 <span class="tab-badge" id="cnt-kw">0</span></div>
     </div>
@@ -583,7 +582,7 @@
 <script>
 // ── 상태 ──────────────────────────────────────────────────────────────────────
 let stats = { total:0, deleted:0, title_changed:0, keyword_hit:0 };
-let currentTab = 'all';
+let currentTab = 'title_changed';
 let articleOffset = 0;
 let flaggedOffset = 0;
 let articleSearch = '';
@@ -621,7 +620,6 @@ function handleWSEvent(msg) {
     showToast(`🔄 제목 변경 [${msg.phase}]: ${msg.old_title.substring(0,20)} → ${msg.new_title.substring(0,20)}`);
   } else if (msg.type === 'deleted') {
     updateStats();
-    if (selectedFlagged.size === 0) loadFlagged();   // 선택 중이면 재렌더 보류
     updateArticleRow(msg.article_id, {status: 'deleted'});
     showToast(`🗑 삭제 감지: article ${msg.article_id}`);
   } else if (msg.type === 'session') {
@@ -641,12 +639,7 @@ async function updateStats() {
   document.getElementById('hd-count').textContent = `${stats.total}건`;
   const cafeNames = (stats.cafe_names || []).map(c => c.name).join(', ');
   document.getElementById('hd-cafe').textContent = cafeNames || '카페 미설정';
-  document.getElementById('cnt-all').textContent =
-    stats.deleted + stats.title_changed + stats.keyword_hit + (stats.duplicate||0) + (stats.modified||0);
-  const modEl = document.getElementById('cnt-mod');
-  if (modEl) modEl.textContent = stats.modified || 0;
   document.getElementById('cnt-title').textContent = stats.title_changed;
-  document.getElementById('cnt-del').textContent = stats.deleted;
   const dupEl = document.getElementById('cnt-dup');
   if (dupEl) dupEl.textContent = stats.duplicate || 0;
   document.getElementById('cnt-kw').textContent = stats.keyword_hit;
