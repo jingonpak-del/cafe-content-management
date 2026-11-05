@@ -205,7 +205,10 @@ class LinkGuard:
         else:
             db.conn.execute("""INSERT INTO link_spam_action(cafe_id, member_key, nickname, domains, deleted,
                                    delete_fail, stopped, detail, created_at, updated_at)
-                               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                               VALUES(?,?,?,?,?,?,?,?,?,?)
+                               ON CONFLICT(cafe_id, member_key) DO UPDATE SET
+                                   deleted=deleted+excluded.deleted, delete_fail=excluded.delete_fail,
+                                   stopped=MAX(stopped, excluded.stopped), updated_at=excluded.updated_at""",
                             (cafe_id, mk, nick, doms, ok, fail, stopped, json.dumps(done), now, now))
         db.conn.commit()
         if ok or fail or not prev:
