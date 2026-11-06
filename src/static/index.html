@@ -191,7 +191,7 @@
   <span id="hd-count" class="badge badge-blue">0건</span>
   <span id="hd-watcher" class="badge badge-red">감시 중지</span>
   <span id="hd-sweep" class="badge badge-blue" style="cursor:help" title="목록순회·재방문 상태">순회 확인중</span>
-  <span id="hd-scam" class="badge badge-blue" style="cursor:pointer" title="등업게시판 주식 사기글 차단·자삭 알림 (클릭)" onclick="openScamPanel()">🛡 사기글 감시</span>
+  <span id="hd-scam" class="badge badge-blue" style="cursor:pointer" title="등업게시판 주식 사기글 차단·자삭 알림 (클릭)" onclick="window.open('/guard','guard')">🛡 사기글 감시</span>
   <div class="spacer"></div>
   <button class="btn-success" id="btn-watcher-toggle" onclick="toggleWatcher()">▶ 감시 시작</button>
   <button class="btn-secondary" onclick="openCompanyModal()">📊 업체 현황</button>
@@ -732,7 +732,7 @@ setInterval(pollScam, 30000);
 async function openScamPanel() {
   const d = scamData || {actions: [], selfdel: []};
   let L = {actions: [], block: [], flags: [], candidates: []};
-  try { L = await fetch('/api/linkspam/status').then(r => r.json()); } catch (e) {}
+  try { L = await fetch('/api/linkspam/status?cand=1').then(r => r.json()); } catch (e) {}
   const t = ms => ms ? new Date(ms).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
   const acts = d.actions.map(a => `<tr style="${a.new?'background:#fff3f3':''}">
       <td>${t(a.created_at)}</td><td>${esc(a.cafe_name)}</td>

@@ -168,6 +168,39 @@ def index():
     return (STATIC / "index.html").read_text(encoding="utf-8")
 
 
+@app.get("/guard", response_class=HTMLResponse)
+def guard_page():
+    """사기글·광고 링크 댓글 확인 전용 페이지(목록 + 실제 게시글 미리보기 + 처리 버튼)."""
+    return (STATIC / "guard.html").read_text(encoding="utf-8")
+
+
+@app.get("/api/guard/article/{cafe_id}/{article_id}")
+def guard_article(cafe_id: int, article_id: int):
+    """카페에서 지금 상태 그대로 본문·댓글을 읽어 온다(삭제됐으면 DB 기록으로)."""
+    from . import cafe_api
+    cl = cafe_api.make_client(SESSION_MGR.load_cookies(_load_config().get("account_id")))
+    try:
+        try:
+            b = cafe_api.fetch_article_body(cafe_id, article_id, client=cl)
+        except cafe_api.ArticleGoneError as e:
+            db = _db()
+            try:
+                r = db.conn.execute("SELECT title, writer_nickname, content_html FROM articles WHERE cafe_id=? AND article_id=?",
+                                    (cafe_id, article_id)).fetchone()
+            finally:
+                db.close()
+            return {"gone": str(e), "title": r["title"] if r else "", "writer": r["writer_nickname"] if r else "",
+                    "html": (r["content_html"] or "") if r else "", "comments": []}
+        cs = cafe_api.fetch_comments(cafe_id, article_id, client=cl, max_pages=10)
+        return {"title": b.title, "writer": b.writer_nickname, "writer_key": b.member_key, "menu_id": b.menu_id,
+                "write_ts": b.write_ts, "html": b.content_html,
+                "comments": [{"id": c.comment_id, "nick": c.writer_nickname, "member_key": c.member_key,
+                              "content": c.content, "ts": c.update_ts, "reply": c.is_reply,
+                              "deleted": c.is_deleted, "writer": c.is_article_writer} for c in cs]}
+    finally:
+        cl.close()
+
+
 @app.get("/api/stats")
 def stats():
     db = _db()
@@ -1868,7 +1901,7 @@ def scam_release(action_id: int):
 
 
 @app.get("/api/linkspam/status")
-def linkspam_status():
+def linkspam_status(cand: int = 0):
     """광고 링크 댓글: 차단 내역 · 차단 도메인 · 후보(같은 도메인 3개 글 이상)."""
     from . import link_guard
     db = _db()
@@ -1886,7 +1919,8 @@ def linkspam_status():
                FROM link_flag WHERE status='pending' ORDER BY created_at DESC LIMIT 300""")]
         for r in flags:
             r["cafe_name"] = names.get(r["cafe_id"], "")
-        return {"actions": acts, "block": block, "flags": flags, "candidates": link_guard.candidates(db)}
+        return {"actions": acts, "block": block, "flags": flags,
+                "candidates": link_guard.candidates(db) if cand else []}   # 후보 집계는 느려서(1분+) 요청할 때만
     finally:
         db.close()
 
