@@ -650,6 +650,12 @@ SUP_REFRESH = {"running": False, "done": 0, "total": 0, "group_id": None}
 SUP_CLOSE_DAY = 3
 
 
+def _monthly_groups(db) -> list:
+    """월 결과표 대상 그룹 (settings.json monthly_exclude_groups 에 든 그룹 id 는 뺌)."""
+    skip = set(_load_config().get("monthly_exclude_groups", []))
+    return [g for g in db.get_supporter_groups() if g["id"] not in skip]
+
+
 def _prev_ym(now=None) -> str:
     now = now or datetime.now()
     y, m = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
@@ -688,7 +694,7 @@ def sup_monthly_all(ym: str = ""):
     db = _db()
     try:
         out = []
-        for g in db.get_supporter_groups():
+        for g in _monthly_groups(db):
             rows, closed = db.get_supporter_month(g["id"], ym)
             out.append({"group_id": g["id"], "name": g["name"], "rows": rows,
                         "closed_at": _fmt(closed) if closed else None})
@@ -703,7 +709,7 @@ def sup_monthly_close(req: dict):
     ym = req.get("ym") or _prev_ym()
     db = _db()
     try:
-        gids = [int(req["group_id"])] if req.get("group_id") else [g["id"] for g in db.get_supporter_groups()]
+        gids = [int(req["group_id"])] if req.get("group_id") else [g["id"] for g in _monthly_groups(db)]
         return {"ok": True, "results": [_close_supporter_month(db, g, ym, bool(req.get("refresh_naver")))
                                         for g in gids]}
     finally:
@@ -720,7 +726,7 @@ def _sup_close_loop():
                 db = Database(DB_PATH)
                 try:
                     s, e = _month_range(ym)
-                    for g in db.get_supporter_groups():
+                    for g in _monthly_groups(db):
                         if db.get_supporter_month(g["id"], ym)[1]:
                             continue
                         _run_sup_refresh(g["id"], s, e, -1)   # 조회·댓글 최신화
