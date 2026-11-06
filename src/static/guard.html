@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>사기글·광고댓글 확인</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.5 -apple-system, "Malgun Gothic", sans-serif; background: #f4f5f7; color: #222; height: 100vh; display: flex; flex-direction: column; }
+  header { background: #1a1f36; color: #fff; padding: 10px 16px; display: flex; gap: 12px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0; }
+  header small { color: #aab; }
+  header a { color: #9cf; }
+  main { flex: 1; display: flex; min-height: 0; }
+  #left { width: 440px; min-width: 320px; border-right: 1px solid #ddd; display: flex; flex-direction: column; background: #fff; }
+  #tabs { display: flex; border-bottom: 1px solid #ddd; }
+  #tabs button { flex: 1; border: 0; background: none; padding: 10px 4px; cursor: pointer; font-size: 13px; border-bottom: 3px solid transparent; }
+  #tabs button.on { border-bottom-color: #e5484d; font-weight: 700; }
+  #list { flex: 1; overflow: auto; }
+  .item { padding: 10px 12px; border-bottom: 1px solid #eee; cursor: pointer; }
+  .item:hover { background: #f7f9ff; }
+  .item.on { background: #e8efff; }
+  .item .sub { color: #666; font-size: 12px; }
+  .item .cm { margin: 4px 0 0 8px; padding: 4px 6px; border-left: 3px solid #f5a524; background: #fffbf0; font-size: 12px; border-radius: 3px; }
+  .item .cm.on { border-left-color: #e5484d; background: #ffecec; }
+  .dom { display: inline-block; background: #e6f0ff; color: #1857c9; border-radius: 4px; padding: 0 5px; font-size: 11px; }
+  .dom.auto { background: #ffe1e1; color: #c00; }
+  #right { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  #bar { padding: 10px 14px; background: #fff; border-bottom: 1px solid #ddd; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #bar .t { font-weight: 700; flex: 1; min-width: 200px; }
+  #view { flex: 1; overflow: auto; padding: 14px; }
+  .card { background: #fff; border: 1px solid #e3e3e3; border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  iframe { width: 100%; border: 0; min-height: 200px; }
+  .c { padding: 8px 10px; border-bottom: 1px solid #f0f0f0; }
+  .c.reply { padding-left: 32px; }
+  .c.mine { background: #fffbe6; }
+  .c.hit { background: #ffe5e5; outline: 2px solid #e5484d; }
+  .c.del { color: #aaa; text-decoration: line-through; }
+  .c .n { font-weight: 600; font-size: 13px; }
+  .c .x { white-space: pre-wrap; word-break: break-all; }
+  button.b { border: 1px solid #ccc; background: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  button.red { background: #e5484d; color: #fff; border-color: #e5484d; }
+  button.green { background: #2f9e44; color: #fff; border-color: #2f9e44; }
+  .empty { color: #888; padding: 30px; text-align: center; }
+  #domains { padding: 8px 12px; border-top: 1px solid #ddd; font-size: 12px; }
+  #domains input { width: 150px; }
+  @media (max-width: 800px) { main { flex-direction: column; } #left { width: auto; height: 45vh; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡 사기글·광고 댓글 확인</h1>
+  <small id="status"></small>
+  <div style="flex:1"></div>
+  <a href="/">← 대시보드</a>
+</header>
+<main>
+  <section id="left">
+    <div id="tabs">
+      <button data-t="flags" class="on">확인 대기</button>
+      <button data-t="links">링크 처리</button>
+      <button data-t="scam">사기글</button>
+      <button data-t="selfdel">자삭</button>
+    </div>
+    <div id="list"></div>
+    <div id="domains"></div>
+  </section>
+  <section id="right">
+    <div id="bar"><span class="t">왼쪽에서 항목을 고르면 실제 게시글과 댓글이 여기 보입니다.</span></div>
+    <div id="view"></div>
+  </section>
+</main>
+<script>
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const t = ms => ms ? new Date(ms).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+let tab = 'flags', S = {}, L = {}, sel = null;
+
+async function load() {
+  [S, L] = await Promise.all([fetch('/api/scam/status').then(r => r.json()), fetch('/api/linkspam/status').then(r => r.json())]);
+  const dead = S.guard_ago_s == null || S.guard_ago_s > 300;
+  document.getElementById('status').textContent = dead ? '⚠ 감시 멈춤' : `감시 중 · ${S.guard_ago_s}초 전 확인`;
+  const nAcc = new Set((L.flags || []).map(f => f.cafe_id + '|' + f.member_key)).size;
+  const label = {flags: `확인 대기 ${nAcc}`, links: `링크 처리 ${L.actions.length}`, scam: `사기글 ${S.actions.length}`,
+                 selfdel: `자삭 ${S.new_selfdel ? '🔴' + S.new_selfdel : S.selfdel.length}`};
+  document.querySelectorAll('#tabs button').forEach(b => b.textContent = label[b.dataset.t]);
+  document.title = nAcc ? `(${nAcc}) 사기글·광고댓글 확인` : '사기글·광고댓글 확인';
+  renderList(); renderDomains();
+}
+
+function groups() {
+  const g = {};
+  (L.flags || []).forEach(f => (g[f.cafe_id + '|' + f.member_key] ||= []).push(f));
+  return Object.values(g);
+}
+
+function renderList() {
+  const el = document.getElementById('list');
+  let h = '';
+  if (tab === 'flags') {
+    h = groups().map(fs => {
+      const k = fs[0].cafe_id + '|' + fs[0].member_key;
+      return `<div class="item ${sel?.key === k ? 'on' : ''}">
+        <div><b>${esc(fs[0].nickname)}</b> <span class="sub">${esc(fs[0].cafe_name)} · ${fs.length}개 · ${t(fs[0].created_at)}</span></div>
+        ${fs.map((f, i) => `<div class="cm ${sel?.flag === f.id ? 'on' : ''}" onclick="pickFlag('${k}',${i})">
+          <span class="dom">${esc(f.domain)}</span> ${esc((f.article_title || '').slice(0, 28))}<br>
+          <span class="sub">${esc((f.content || '').slice(0, 80))}</span></div>`).join('')}
+      </div>`;
+    }).join('') || '<div class="empty">확인 대기 댓글이 없습니다 👍</div>';
+  } else if (tab === 'links') {
+    h = L.actions.map(a => `<div class="item">
+        <div><b>${esc(a.nickname)}</b> <span class="sub">${esc(a.cafe_name)} · ${t(a.updated_at)}</span></div>
+        <div class="sub">${esc(a.domains)} · 댓글 삭제 ${a.deleted}${a.delete_fail ? ' 실패 ' + a.delete_fail : ''} · 정지 ${a.stopped ? 'O' : 'X'}</div>
+        ${a.released ? '<span class="sub">해제됨</span>' : `<button class="b" onclick="linkRelease(${a.id})">정지 해제</button>`}
+      </div>`).join('') || '<div class="empty">처리 내역 없음</div>';
+  } else if (tab === 'scam') {
+    h = S.actions.map(a => `<div class="item ${sel?.scam === a.id ? 'on' : ''}" onclick="pickArticle(${a.cafe_id},${a.article_id},{scam:${a.id}})">
+        <div><b>${esc(a.title)}</b></div>
+        <div class="sub">${esc(a.cafe_name)} · ${esc(a.writer_nickname)} · ${t(a.created_at)} · ${a.deleted ? '삭제됨' : '삭제실패'} · 정지 ${a.stopped}/${a.member_keys.length}</div>
+        <div class="sub">${esc(a.reasons || '')}</div>
+        ${a.released ? '<span class="sub">해제됨</span>' : `<button class="b" onclick="event.stopPropagation();scamRelease(${a.id})">정지 해제</button>`}
+      </div>`).join('') || '<div class="empty">차단 내역 없음</div>';
+  } else {
+    h = (S.new_selfdel ? `<div style="padding:8px 12px"><button class="b green" onclick="ack()">새 자삭 모두 확인함</button></div>` : '')
+      + S.selfdel.map(a => `<div class="item" style="${a.new ? 'background:#fff3f3' : ''}" onclick="pickArticle(${a.cafe_id},${a.article_id},{})">
+        <div><b>${esc(a.title)}</b></div>
+        <div class="sub">${esc(a.cafe_name)} · ${esc(a.writer_nickname)} ${esc(a.member_tag || '')} · ${t(a.deleted_at)} · ${a.delete_type === 'self' ? '자삭 확정' : '삭제 감지'}</div>
+      </div>`).join('') || '<div class="empty">최근 7일 자삭 없음</div>';
+  }
+  el.innerHTML = h;
+}
+
+function renderDomains() {
+  document.getElementById('domains').innerHTML = `도메인:
+    ${(L.block || []).map(b => `<span class="dom ${b.auto ? 'auto' : ''}" title="${b.auto ? '자동 처리' : '확인 대기'}">${esc(b.domain)} <a href="#" onclick="block('${esc(b.domain)}',1);return false">✕</a></span>`).join(' ')}
+    <span class="dom">*.info·단축링크</span><br>
+    <input id="nd" placeholder="도메인 추가"> <button class="b" onclick="block(nd.value)">확인 대기</button>
+    <button class="b red" onclick="block(nd.value,0,1)">자동 처리</button>`;
+}
+
+function pickFlag(key, i) {
+  const fs = groups().find(g => g[0].cafe_id + '|' + g[0].member_key === key);
+  if (!fs) return;
+  const f = fs[i];
+  sel = {key, flag: f.id, cafe_id: f.cafe_id, member_key: f.member_key, nick: f.nickname, count: fs.length};
+  renderList();
+  pickArticle(f.cafe_id, f.article_id, sel, f.comment_id);
+}
+
+async function pickArticle(cafe_id, article_id, s, hitComment) {
+  if (s && !s.key) { sel = s; renderList(); }
+  const bar = document.getElementById('bar'), view = document.getElementById('view');
+  const orig = `https://cafe.naver.com/ca-fe/cafes/${cafe_id}/articles/${article_id}`;
+  const acts = sel?.key ? `<button class="b red" onclick="decide('approve')">🗑 ${esc(sel.nick)} 댓글 ${sel.count}개 삭제 + 활동정지</button>
+      <button class="b" onclick="decide('dismiss')">괜찮음 (그대로 둠)</button>` : '';
+  bar.innerHTML = `<span class="t">불러오는 중…</span>${acts}<a class="b" href="${orig}" target="_blank" rel="noopener">원문 새 탭 ↗</a>`;
+  view.innerHTML = '';
+  const a = await fetch(`/api/guard/article/${cafe_id}/${article_id}`).then(r => r.json());
+  bar.querySelector('.t').textContent = a.title || '(제목 없음)';
+  const mk = sel?.member_key;
+  view.innerHTML = `<div class="card"><div class="sub" style="color:#666;font-size:12px">${esc(a.writer)} · ${t(a.write_ts)}
+      ${a.gone ? ' · <b style="color:#c00">이미 삭제된 글 (저장된 본문)</b>' : ''}</div>
+      <iframe id="body" sandbox="allow-same-origin" referrerpolicy="no-referrer"></iframe></div>
+    <div class="card"><b>댓글 ${a.comments.length}개</b>${mk ? ' <span style="font-size:12px;color:#666">— 노란색: 이 계정 댓글, 빨간 테두리: 표시된 댓글</span>' : ''}
+      ${a.comments.map(c => `<div class="c ${c.reply ? 'reply' : ''} ${c.deleted ? 'del' : ''} ${mk && c.member_key === mk ? 'mine' : ''} ${c.id === hitComment ? 'hit' : ''}" id="c${c.id}">
+        <span class="n">${esc(c.nick)}</span>${c.writer ? ' <span class="dom">작성자</span>' : ''} <span style="color:#999;font-size:12px">${t(c.ts)}</span>
+        <div class="x">${esc(c.content)}</div></div>`).join('') || '<div class="empty">댓글 없음</div>'}</div>`;
+  const fr = document.getElementById('body');
+  fr.srcdoc = `<base target="_blank"><style>body{font:14px/1.6 sans-serif;margin:0}img{max-width:100%;height:auto}</style>${a.html || '<p style="color:#888">본문 없음</p>'}`;
+  fr.onload = () => { fr.style.height = (fr.contentDocument.body.scrollHeight + 20) + 'px';
+    if (hitComment) document.getElementById('c' + hitComment)?.scrollIntoView({block: 'center'}); };
+}
+
+async function decide(action) {
+  if (!sel?.key) return;
+  if (action === 'approve' && !confirm(`${sel.nick} 의 해당 링크 댓글을 모두 삭제하고 활동정지할까요?`)) return;
+  const r = await fetch('/api/linkspam/flag', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cafe_id: sel.cafe_id, member_key: sel.member_key, action})}).then(r => r.json());
+  if (r.error) return alert(r.error);
+  const msg = action === 'approve' ? `✅ ${sel.nick}: 댓글 삭제 ${r.deleted}개${r.fail ? ' · 실패 ' + r.fail : ''} · 정지 ${r.stopped ? 'O' : 'X'}` : `${sel.nick}: 그대로 둠`;
+  sel = null;
+  await load();
+  document.getElementById('bar').innerHTML = `<span class="t">${esc(msg)}</span>`;
+  document.getElementById('view').innerHTML = '';
+  const next = groups()[0];                 // 다음 계정으로 바로 넘어간다
+  if (next) pickFlag(next[0].cafe_id + '|' + next[0].member_key, 0);
+}
+
+async function block(domain, remove, auto) {
+  if (!domain) return;
+  if (!confirm(remove ? `${domain} 를 목록에서 뺄까요?` : auto ? `${domain} 링크 댓글은 앞으로 바로 정지·삭제할까요?` : `${domain} 링크 댓글을 확인 대기로 표시할까요?`)) return;
+  const r = await fetch('/api/linkspam/block', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domain, remove: !!remove, auto: !!auto})}).then(r => r.json());
+  if (r.error) alert(r.error);
+  load();
+}
+async function linkRelease(id) {
+  if (!confirm('이 계정의 활동정지를 해제할까요? (이후 자동 처리하지 않습니다)')) return;
+  const r = await fetch(`/api/linkspam/${id}/release`, {method: 'POST'}).then(r => r.json());
+  alert(r.ok ? `해제 ${r.released}명` : (r.error || '실패')); load();
+}
+async function scamRelease(id) {
+  if (!confirm('이 건의 활동정지를 해제할까요? (글 복구는 카페 관리 > 삭제글 보기)')) return;
+  const r = await fetch(`/api/scam/${id}/release`, {method: 'POST'}).then(r => r.json());
+  alert(r.ok ? `해제 ${r.released}명` : (r.error || '실패')); load();
+}
+async function ack() { await fetch('/api/scam/ack', {method: 'POST'}); load(); }
+
+document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => {
+  tab = b.dataset.t;
+  document.querySelectorAll('#tabs button').forEach(x => x.classList.toggle('on', x === b));
+  renderList();
+});
+load();
+setInterval(() => { if (!document.hidden) load(); }, 30000);
+</script>
+</body>
+</html>
