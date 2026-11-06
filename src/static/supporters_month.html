@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>서포터즈 월 결과표</title>
+<style>
+  body { margin:0; background:#0d1117; color:#e0e0e0; font-family:'Malgun Gothic',sans-serif; font-size:13px; }
+  header { display:flex; gap:10px; align-items:center; padding:10px 16px; background:#16213e; border-bottom:2px solid #0f3460; flex-wrap:wrap; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  select, button, input { background:#0f3460; border:1px solid #1a4a7a; color:#e0e0e0; padding:5px 10px; border-radius:4px; font-size:12px; }
+  button { cursor:pointer; } button:hover { background:#1a4a7a; }
+  #tabs { display:flex; gap:4px; padding:8px 16px 0; flex-wrap:wrap; }
+  .tab { padding:6px 12px; border-radius:6px 6px 0 0; background:#16213e; cursor:pointer; color:#9ca3af; }
+  .tab.on { background:#1e3a5f; color:#fff; }
+  .tab .n { font-size:11px; color:#6b7280; margin-left:4px; }
+  #info { padding:8px 16px; color:#9ca3af; font-size:12px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .wrap { padding:0 16px 24px; overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; min-width:1000px; }
+  th, td { padding:6px 8px; border-bottom:1px solid #1f2937; text-align:right; white-space:nowrap; }
+  th { background:#16213e; position:sticky; top:0; cursor:pointer; font-weight:600; }
+  th.l, td.l { text-align:left; }
+  th.nv { color:#fbbf24; }
+  tr:hover td { background:#111827; }
+  tfoot td { font-weight:700; background:#16213e; }
+  .zero { color:#4b5563; }
+  .warn { color:#fca5a5; }
+</style></head>
+<body>
+<header>
+  <h1>📊 서포터즈 월 결과표</h1>
+  <input type="month" id="ym" onchange="load()">
+  <button onclick="closeMonth(false)" title="이 달을 다시 계산해서 저장 (그룹원·제외글을 바꿨을 때)">↻ 다시 마감</button>
+  <button onclick="closeMonth(true)" title="네이버 공식통계도 새로 받아서 다시 계산">↻ 네이버 통계까지 다시 마감</button>
+  <button onclick="downloadCsv()">⬇ 엑셀(CSV)</button>
+  <a href="/" style="color:#93c5fd;margin-left:auto">← 대시보드</a>
+</header>
+<div id="tabs"></div>
+<div id="info"></div>
+<div class="wrap"><table id="tbl"></table></div>
+<script>
+const COLS = [
+  ['cafe_name','카페','l'], ['nickname','닉네임','l'], ['naver_id','아이디','l'], ['member_tag','멤버태그','l'],
+  ['article_count','글수'], ['total_read','총조회'], ['avg_read','평균조회'], ['total_like','좋아요'], ['comment_count','댓글수'],
+  ['nv_create','공식 글','nv'], ['nv_comment','공식 댓글','nv'], ['nv_like_recv','공식 받은좋아요','nv'],
+  ['nv_view','공식 조회','nv'], ['nv_visit','공식 방문','nv'], ['nv_level','등급','l nv'],
+];
+const SUMS = ['article_count','total_read','total_like','comment_count','nv_create','nv_comment','nv_like_recv','nv_view','nv_visit'];
+let data = null, cur = null, sortKey = 'article_count', sortDir = -1;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+(function init() {
+  const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+  document.getElementById('ym').value = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  load();
+})();
+
+async function load() {
+  const ym = document.getElementById('ym').value;
+  data = await fetch('/api/supporters/monthly?ym=' + ym).then(r => r.json());
+  if (!cur || !data.groups.find(g => g.group_id === cur)) cur = data.groups[0]?.group_id;
+  render();
+}
+
+function render() {
+  document.getElementById('tabs').innerHTML = data.groups.map(g =>
+    `<div class="tab ${g.group_id===cur?'on':''}" onclick="cur=${g.group_id};render()">${esc(g.name)}<span class="n">${g.rows.length}명</span></div>`).join('');
+  const g = data.groups.find(x => x.group_id === cur);
+  const info = document.getElementById('info');
+  const tbl = document.getElementById('tbl');
+  if (!g) { info.textContent = '그룹이 없습니다'; tbl.innerHTML = ''; return; }
+  if (!g.closed_at) {
+    info.innerHTML = `<span class="warn">${data.ym} 은 아직 마감되지 않았습니다.</span> 매월 3일에 자동 마감되며, 위의 "다시 마감"으로 지금 계산할 수 있습니다.`;
+    tbl.innerHTML = ''; return;
+  }
+  const nvAny = g.rows.some(r => r.nv_matched);
+  info.innerHTML = `${data.ym} · 마감 ${esc(g.closed_at)} · ${g.rows.length}명`
+    + (g.rows[0]?.excluded_articles ? ` · 제외 게시글 ${g.rows[0].excluded_articles}건(댓글수에서 뺌)` : '')
+    + (nvAny ? '' : ' · <span class="warn">네이버 공식통계 없음</span>');
+  const rows = [...g.rows].sort((a, b) => {
+    const x = a[sortKey] ?? -1, y = b[sortKey] ?? -1;
+    return (typeof x === 'string' ? x.localeCompare(y) : x - y) * sortDir;
+  });
+  const cell = (r, [k,, cls]) => {
+    const v = r[k];
+    const z = (v === 0 || v == null) && !(cls||'').includes('l');
+    return `<td class="${cls||''} ${z?'zero':''}">${v == null ? '-' : esc(typeof v === 'number' ? v.toLocaleString() : v)}</td>`;
+  };
+  const sum = k => g.rows.reduce((a, r) => a + (r[k] || 0), 0);
+  tbl.innerHTML =
+    `<thead><tr>${COLS.map(([k,t,cls]) => `<th class="${cls||''}" onclick="sortBy('${k}')">${t}${sortKey===k?(sortDir<0?' ▼':' ▲'):''}</th>`).join('')}</tr></thead>`
+    + `<tbody>${rows.map(r => `<tr>${COLS.map(c => cell(r, c)).join('')}</tr>`).join('')}</tbody>`
+    + `<tfoot><tr>${COLS.map(([k,,cls], i) => `<td class="${cls||''}">${i===0?'합계':SUMS.includes(k)?sum(k).toLocaleString():''}</td>`).join('')}</tr></tfoot>`;
+}
+
+function sortBy(k) { sortDir = (sortKey === k) ? -sortDir : -1; sortKey = k; render(); }
+
+async function closeMonth(refreshNaver) {
+  const ym = document.getElementById('ym').value;
+  if (!confirm(`${ym} 전체 그룹을 다시 계산해 저장할까요?`)) return;
+  document.getElementById('info').textContent = '계산 중…';
+  const r = await fetch('/api/supporters/monthly/close', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ym, refresh_naver: refreshNaver})}).then(r => r.json());
+  if (!r.ok) alert('실패: ' + JSON.stringify(r));
+  load();
+}
+
+function downloadCsv() {
+  const g = data.groups.find(x => x.group_id === cur); if (!g || !g.rows.length) return;
+  const lines = [COLS.map(c => c[1]).join(',')].concat(g.rows.map(r =>
+    COLS.map(([k]) => `"${String(r[k] ?? '').replace(/"/g,'""')}"`).join(',')));
+  const blob = new Blob(['﻿' + lines.join('\r\n')], {type:'text/csv'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `서포터즈_${g.name}_${data.ym}.csv`; a.click();
+}
+</script>
+</body></html>

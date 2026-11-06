@@ -6,7 +6,7 @@ import json
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -641,6 +641,101 @@ def _date_range(start: str, end: str):
 
 
 SUP_REFRESH = {"running": False, "done": 0, "total": 0, "group_id": None}
+
+
+# ── 서포터즈 월 마감 결과표 ───────────────────────────────────────────────────
+# 지난달은 매월 3일(늦은 댓글·수정·삭제 반영 여유)에 한 번 계산해 supporter_monthly 에
+# 보관하고, 화면은 그것만 읽는다. 그룹원·제외글을 바꿨으면 '다시 마감'으로 재계산.
+# (경로가 /api/supporters/{group_id}/... 보다 먼저 등록돼야 'monthly' 가 group_id 로 안 잡힘)
+SUP_CLOSE_DAY = 3
+
+
+def _prev_ym(now=None) -> str:
+    now = now or datetime.now()
+    y, m = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+    return f"{y}-{m:02d}"
+
+
+def _month_range(ym: str):
+    y, m = map(int, ym.split("-"))
+    ny, nm = (y, m + 1) if m < 12 else (y + 1, 1)
+    return _date_range(f"{y}-{m:02d}-01", (datetime(ny, nm, 1) - timedelta(days=1)).strftime("%Y-%m-%d"))
+
+
+def _close_supporter_month(db, group_id: int, ym: str, refresh_naver: bool = False) -> dict:
+    """기존 활동분석 로직(자체 집계 + 네이버 공식통계)을 그대로 모아 한 달 결과표로 저장."""
+    s, e = _month_range(ym)
+    names = _cafe_names()
+    rows = db.supporter_stats(group_id, s, e)
+    nv_rows, _ = _supporter_naver_rows(db, group_id, ym, refresh_naver)
+    nv = {(r["cafe_id"], r["member_key"]): r for r in nv_rows}
+    excl = db.get_supporter_excludes(group_id)
+    for r in rows:
+        r["cafe_name"] = names.get(r["cafe_id"], str(r["cafe_id"]))
+        n = nv.get((r["cafe_id"], r["member_key"])) or {}
+        for k in ("nv_matched", "nv_create", "nv_comment", "nv_like_sent",
+                  "nv_like_recv", "nv_view", "nv_visit", "nv_level"):
+            r[k] = n.get(k)
+        r["excluded_articles"] = sum(1 for x in excl if x["cafe_id"] == r["cafe_id"])
+    closed_at = db.save_supporter_month(group_id, ym, rows)
+    return {"group_id": group_id, "ym": ym, "count": len(rows), "closed_at": _fmt(closed_at)}
+
+
+@app.get("/api/supporters/monthly")
+def sup_monthly_all(ym: str = ""):
+    """모든 그룹의 월 결과표(마감된 것만). ym 기본=지난달."""
+    ym = ym or _prev_ym()
+    db = _db()
+    try:
+        out = []
+        for g in db.get_supporter_groups():
+            rows, closed = db.get_supporter_month(g["id"], ym)
+            out.append({"group_id": g["id"], "name": g["name"], "rows": rows,
+                        "closed_at": _fmt(closed) if closed else None})
+        return {"ym": ym, "groups": out}
+    finally:
+        db.close()
+
+
+@app.post("/api/supporters/monthly/close")
+def sup_monthly_close(req: dict):
+    """{ym, group_id(생략=전체), refresh_naver} — 마감(또는 다시 마감)."""
+    ym = req.get("ym") or _prev_ym()
+    db = _db()
+    try:
+        gids = [int(req["group_id"])] if req.get("group_id") else [g["id"] for g in db.get_supporter_groups()]
+        return {"ok": True, "results": [_close_supporter_month(db, g, ym, bool(req.get("refresh_naver")))
+                                        for g in gids]}
+    finally:
+        db.close()
+
+
+def _sup_close_loop():
+    """매월 SUP_CLOSE_DAY일 이후, 지난달이 아직 마감 안 된 그룹을 자동 마감(최신값 갱신·네이버 통계 포함)."""
+    while True:
+        try:
+            now = datetime.now()
+            if now.day >= SUP_CLOSE_DAY:
+                ym = _prev_ym(now)
+                db = Database(DB_PATH)
+                try:
+                    s, e = _month_range(ym)
+                    for g in db.get_supporter_groups():
+                        if db.get_supporter_month(g["id"], ym)[1]:
+                            continue
+                        _run_sup_refresh(g["id"], s, e, -1)   # 조회·댓글 최신화
+                        _close_supporter_month(db, g["id"], ym, refresh_naver=True)
+                        print(f"[sup-close] {g['name']} {ym} 마감", flush=True)
+                finally:
+                    db.close()
+        except Exception as ex:
+            print("[sup-close] 오류:", ex, flush=True)
+        time.sleep(3600)
+
+
+@app.get("/supporters-month", response_class=HTMLResponse)
+def supporters_month_page():
+    return (STATIC / "supporters_month.html").read_text(encoding="utf-8")
 
 
 @app.get("/api/supporters/groups")
@@ -2187,6 +2282,7 @@ async def ws_endpoint(ws: WebSocket):
 @app.on_event("startup")
 async def startup():
     hub.loop = asyncio.get_running_loop()
+    threading.Thread(target=_sup_close_loop, daemon=True, name="sup-close").start()
     cfg = _load_config()
     STATE["cafe_names"] = [
         {"cafe_id": c["cafe_id"], "name": c.get("name") or c.get("cafe_url", ""), "cafe_url": c.get("cafe_url", "")}

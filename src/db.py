@@ -210,6 +210,18 @@ CREATE TABLE IF NOT EXISTS content_history (
 CREATE INDEX IF NOT EXISTS idx_content_history_article ON content_history (cafe_id, article_id);
 
 -- 서포터즈 분석: 통계 제외 게시글 (이벤트·미션용 글 → 이 글에 단 댓글은 댓글수에서 제외)
+-- 서포터즈 월 마감 결과표 (지난달을 한 번 계산해 보관 → 화면은 이것만 읽음)
+-- data 는 그룹원 1명의 결과(JSON). 항목을 늘려도 테이블은 그대로, '다시 마감'으로 재계산.
+CREATE TABLE IF NOT EXISTS supporter_monthly (
+    group_id    INTEGER NOT NULL,
+    ym          TEXT NOT NULL,
+    cafe_id     INTEGER NOT NULL,
+    member_key  TEXT NOT NULL,
+    data        TEXT NOT NULL,
+    closed_at   INTEGER NOT NULL,
+    PRIMARY KEY (group_id, ym, cafe_id, member_key)
+);
+
 CREATE TABLE IF NOT EXISTS supporter_exclude (
     group_id    INTEGER NOT NULL,
     cafe_id     INTEGER NOT NULL,
@@ -1472,6 +1484,24 @@ class Database:
         self.conn.execute("DELETE FROM supporter_member WHERE group_id=?", (group_id,))
         self.conn.execute("DELETE FROM supporter_exclude WHERE group_id=?", (group_id,))
         self.conn.commit()
+
+    def save_supporter_month(self, group_id: int, ym: str, rows: list) -> int:
+        """월 마감 결과 저장(해당 그룹·월은 통째로 교체)."""
+        now = int(time.time() * 1000)
+        self.conn.execute("DELETE FROM supporter_monthly WHERE group_id=? AND ym=?", (group_id, ym))
+        self.conn.executemany(
+            "INSERT INTO supporter_monthly VALUES (?,?,?,?,?,?)",
+            [(group_id, ym, r["cafe_id"], r["member_key"], json.dumps(r, ensure_ascii=False), now)
+             for r in rows])
+        self.conn.commit()
+        return now
+
+    def get_supporter_month(self, group_id: int, ym: str) -> tuple:
+        """(rows, closed_at) — 마감 안 됐으면 ([], None)."""
+        rs = self.conn.execute(
+            "SELECT data, closed_at FROM supporter_monthly WHERE group_id=? AND ym=?",
+            (group_id, ym)).fetchall()
+        return [json.loads(r[0]) for r in rs], (rs[0][1] if rs else None)
 
     def get_supporter_groups(self) -> list:
         return [dict(r) for r in self.conn.execute(
