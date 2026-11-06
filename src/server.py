@@ -1949,7 +1949,7 @@ def linkspam_block(body: dict):
 
 @app.post("/api/linkspam/flag")
 def linkspam_flag(body: dict):
-    """확인 대기 링크 댓글 처리 {cafe_id, member_key, action: approve(삭제+정지)|dismiss(괜찮음)}."""
+    """확인 대기 링크 댓글 처리 {cafe_id, member_key, action: delete(댓글 삭제)|approve(삭제+정지)|dismiss(괜찮음)}."""
     from . import cafe_api, link_guard
     import time as _t
     cafe_id, mk = int(body.get("cafe_id") or 0), body.get("member_key") or ""
@@ -1967,7 +1967,7 @@ def linkspam_flag(body: dict):
                 print(m, flush=True)
         cl = cafe_api.make_client(SESSION_MGR.load_cookies(_load_config().get("account_id")))
         try:
-            res = link_guard.LinkGuard(_W()).approve(db, cl, cafe_id, mk)
+            res = link_guard.LinkGuard(_W()).approve(db, cl, cafe_id, mk, stop=body.get("action") != "delete")
         finally:
             cl.close()
         if res is None:

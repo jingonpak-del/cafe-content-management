@@ -206,7 +206,7 @@ class LinkGuard:
             return r[0]
         return None
 
-    def punish(self, db, client, cafe_id, mk, nick, domains, is_target, extra=None, force=False):
+    def punish(self, db, client, cafe_id, mk, nick, domains, is_target, extra=None, force=False, stop=True):
         """활동정지 + 이 계정 댓글 중 is_target(본문) 이 참인 것 전부 삭제. force=사람이 승인한 경우."""
         if not force and self.exempt(db, cafe_id, mk):
             return 0, 0, 0
@@ -255,7 +255,7 @@ class LinkGuard:
             time.sleep(0.4)
         stopped = prev["stopped"] if prev else 0
         note = ""
-        if not stopped:
+        if not stopped and stop:
             try:
                 s, fails = stop_members(client, cafe_id, [mk])
                 stopped = int(s > 0)
@@ -283,8 +283,8 @@ class LinkGuard:
                        + (f" 실패 {fail}" if fail else "") + f" · 정지 {'O' if stopped else 'X'}{note}")
         return ok, fail, stopped
 
-    def approve(self, db, client, cafe_id, mk):
-        """사람이 [삭제+정지] 승인: 확인 대기 댓글 + 이 계정의 같은 도메인 댓글 삭제, 활동정지."""
+    def approve(self, db, client, cafe_id, mk, stop=True):
+        """사람이 승인: 확인 대기 댓글 + 이 계정의 같은 도메인 댓글 삭제, stop=True 면 활동정지까지."""
         rows = db.conn.execute("SELECT * FROM link_flag WHERE cafe_id=? AND member_key=? AND status='pending'",
                                (cafe_id, mk)).fetchall()
         if not rows:
@@ -292,10 +292,11 @@ class LinkGuard:
         doms = {r["domain"] for r in rows}
         extra = {(r["article_id"], r["comment_id"]): r["menu_id"] for r in rows}
         res = self.punish(db, client, cafe_id, mk, rows[0]["nickname"], doms,
-                          lambda t: any(_match(d, doms) for d in domains_in(t)), extra, force=True)
+                          lambda t: any(_match(d, doms) for d in domains_in(t)), extra, force=True, stop=stop)
         db.conn.execute("UPDATE link_flag SET status='approved', decided_at=? WHERE cafe_id=? AND member_key=? "
                         "AND status='pending'", (int(time.time() * 1000), cafe_id, mk))
-        db.conn.execute("UPDATE link_spam_action SET released=0 WHERE cafe_id=? AND member_key=?", (cafe_id, mk))
+        if stop:
+            db.conn.execute("UPDATE link_spam_action SET released=0 WHERE cafe_id=? AND member_key=?", (cafe_id, mk))
         db.conn.commit()
         return res
 
