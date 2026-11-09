@@ -96,6 +96,14 @@ def score(title: str, body: str, comments: list) -> dict:
             "invisible": invisible, "reasons": reasons}
 
 
+def bad_keys(db: Database, cafe_id: int) -> set:
+    """사기글을 쓴 적 있는 계정(처리 내역·수동 정지 기록). 탈퇴했다 다시 와도 같은 계정이면 바로 잡는다."""
+    ks = {r[0] for r in db.conn.execute(
+        "SELECT writer_key FROM scam_action WHERE cafe_id=? AND writer_key!=''", (cafe_id,))}
+    ks |= {r[0] for r in db.conn.execute("SELECT member_key FROM guard_stop WHERE cafe_id=?", (cafe_id,))}
+    return ks
+
+
 def accomplices(writer_key: str, comments: list) -> list[str]:
     """정지할 계정: 작성자 + 링크·주식어를 쓴 댓글 작성자(욕하는 일반회원은 제외)."""
     keys = [writer_key] if writer_key else []
@@ -253,6 +261,9 @@ class ScamGuard:
                 comments = ent.get("comments", [])
                 time.sleep(0.4)
             s = score(ent["title"], ent["body"], comments)
+            if not s["hit"] and ent["writer_key"] and ent["writer_key"] in bad_keys(db, cafe_id):
+                s["hit"] = True
+                s["reasons"].append("이전에 사기글을 쓴 계정")
             if s["hit"]:
                 self._act(db, client, cafe_id, menu_id, name, a.article_id, ent, comments, s)
         for k in [k for k in self.seen if k[0] == cafe_id and k not in live]:

@@ -206,15 +206,20 @@ def guard_stop(body: dict):
             return JSONResponse({"error": "카페 스튜디오 본인인증이 필요합니다"}, status_code=409)
         finally:
             cl.close()
-        failed = {str(f) for f in fails}
+        # NOT_CAFE_MEMBER = 이미 카페를 나간 계정: 정지는 못 하지만 기록해 두고(재가입 시 자동 차단) 실패로 세지 않는다
+        left = {f.get("memberKey") for f in fails if isinstance(f, dict) and f.get("reasonCode") == "NOT_CAFE_MEMBER"}
+        real = [f for f in fails if not (isinstance(f, dict) and f.get("reasonCode") == "NOT_CAFE_MEMBER")]
+        bad = {f.get("memberKey") for f in real if isinstance(f, dict)}
         for m in members:
-            if ok and not any(m["key"] in x for x in failed):
-                db.conn.execute(
-                    """INSERT INTO guard_stop(cafe_id, member_key, nickname, reason, created_at) VALUES(?,?,?,?,?)
-                       ON CONFLICT(cafe_id, member_key) DO UPDATE SET released=0, created_at=excluded.created_at""",
-                    (cafe_id, m["key"], m.get("nick") or "", body.get("reason") or "", int(_t.time() * 1000)))
+            if m["key"] in bad:
+                continue
+            reason = ("LEFT " if m["key"] in left else "") + (body.get("reason") or "")
+            db.conn.execute(
+                """INSERT INTO guard_stop(cafe_id, member_key, nickname, reason, created_at) VALUES(?,?,?,?,?)
+                   ON CONFLICT(cafe_id, member_key) DO UPDATE SET released=0, reason=excluded.reason, created_at=excluded.created_at""",
+                (cafe_id, m["key"], m.get("nick") or "", reason, int(_t.time() * 1000)))
         db.conn.commit()
-        return {"ok": True, "stopped": ok, "failures": fails}
+        return {"ok": True, "stopped": ok, "left": len(left), "failures": real}
     finally:
         db.close()
 
@@ -2020,10 +2025,13 @@ def scam_status():
                 ORDER BY a.deleted_at DESC LIMIT 100""",
             args + [int(_t.time() * 1000) - 7 * 86400000])]
         stop_by_cafe = {c: _stopped_keys(db, c) for c, _, _ in boards}
+        left_keys = {c: {x[0] for x in db.conn.execute(
+            "SELECT member_key FROM guard_stop WHERE cafe_id=? AND reason LIKE 'LEFT%'", (c,))} for c, _, _ in boards}
         for r in selfdel:
             r["cafe_name"] = names.get(r["cafe_id"], "")
             r["new"] = r["deleted_at"] > ack
             r["suspect"] = scam_guard.title_suspect(r["title"])
+            r["left"] = r["member_key"] in left_keys.get(r["cafe_id"], ())
             r["stopped"] = r["member_key"] in stop_by_cafe.get(r["cafe_id"], ())
         acts = [dict(r) for r in db.conn.execute(
             """SELECT id, cafe_id, article_id, title, writer_nickname, member_keys, reasons,

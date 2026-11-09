@@ -127,14 +127,14 @@ function renderList() {
     const gs = {};
     S.selfdel.forEach(a => (gs[a.cafe_id + '|' + a.member_key] ||= []).push(a));
     SD = Object.values(gs).sort((x, y) => (y.some(a => a.suspect) - x.some(a => a.suspect)) || (y[0].deleted_at - x[0].deleted_at));
-    const todo = SD.filter(g => g.some(a => a.suspect) && !g[0].stopped);
+    const todo = SD.filter(g => g.some(a => a.suspect) && !g[0].stopped && !g[0].left);
     h = (S.new_selfdel ? `<div style="padding:8px 12px"><button class="b green" onclick="ack()">새 자삭 모두 확인함</button></div>` : '')
       + (todo.length ? `<div style="padding:8px 12px;background:#fff3f3"><button class="b red" onclick="stopSuspects()">사기 의심 글쓴이 ${todo.length}명 모두 활동정지</button>
           <div class="sub">제목이 운영진 사칭·토스 이벤트형인 글을 쓴 계정입니다. 개별 확인은 아래 글을 눌러 보세요.</div></div>` : '')
       + SD.map((g, i) => `<div class="item" style="${g.some(a => a.new) ? 'background:#fff3f3' : ''}">
         <div><b>${esc(g[0].writer_nickname)}</b> <span class="sub">${esc(g[0].cafe_name)} · ${g.length}건 · ${t(g[0].deleted_at)}</span>
           ${g.some(a => a.suspect) ? '<span class="tag stop">사기 의심</span>' : ''}
-          ${g[0].stopped ? '<span class="tag stop">정지됨</span>' : `<button class="b" style="float:right;padding:2px 8px" onclick="stopGroup(${i})">활동정지</button>`}</div>
+          ${g[0].left ? '<span class="tag">탈퇴·정지불가(기록됨)</span>' : g[0].stopped ? '<span class="tag stop">정지됨</span>' : `<button class="b" style="float:right;padding:2px 8px" onclick="stopGroup(${i})">활동정지</button>`}</div>
         ${g.slice(0, 4).map(a => `<div class="cm" onclick="pickArticle(${a.cafe_id},${a.article_id},{})">${esc(a.title.slice(0, 34))}
           <span class="sub">${a.delete_type === 'self' ? '자삭' : '삭제 감지'}${a.suspect ? ' · ' + esc(a.suspect) : ''}</span></div>`).join('')}
         ${g.length > 4 ? `<div class="sub">… 외 ${g.length - 4}건</div>` : ''}
@@ -199,6 +199,8 @@ async function doStop(cafe_id, members, reason) {
     body: JSON.stringify({cafe_id, members, reason})}).then(r => r.json());
   if (r.error) { alert(r.error); return false; }
   if (r.failures?.length) alert('일부 실패: ' + JSON.stringify(r.failures).slice(0, 200));
+  else if (r.left) alert(`정지 ${r.stopped || 0}명 · 이미 카페를 나간 계정 ${r.left}명은 정지할 수 없어 기록만 해 두었습니다.
+(같은 계정이 다시 글을 올리면 바로 삭제·정지됩니다)`);
   return true;
 }
 async function stopOne(i) {
@@ -212,7 +214,7 @@ async function stopGroup(i) {
   if (await doStop(g[0].cafe_id, [{key: g[0].member_key, nick: g[0].writer_nickname}], '/guard 자삭 계정')) load();
 }
 async function stopSuspects() {
-  const todo = SD.filter(g => g.some(a => a.suspect) && !g[0].stopped);
+  const todo = SD.filter(g => g.some(a => a.suspect) && !g[0].stopped && !g[0].left);
   if (!confirm(`사기 의심 글쓴이 ${todo.length}명을 모두 활동정지할까요?
 ` + todo.map(g => g[0].writer_nickname).join(', ').slice(0, 300))) return;
   const by = {};
