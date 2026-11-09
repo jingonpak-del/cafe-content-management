@@ -232,7 +232,7 @@ def guard_article(cafe_id: int, article_id: int):
             try:
                 r = db.conn.execute("SELECT title, writer_nickname, content_html FROM articles WHERE cafe_id=? AND article_id=?",
                                     (cafe_id, article_id)).fetchone()
-                sa = db.conn.execute("SELECT snapshot, writer_nickname FROM scam_action WHERE cafe_id=? AND article_id=?",
+                sa = db.conn.execute("SELECT snapshot, writer_nickname, writer_key FROM scam_action WHERE cafe_id=? AND article_id=?",
                                      (cafe_id, article_id)).fetchone()
             finally:
                 db.close()
@@ -246,7 +246,7 @@ def guard_article(cafe_id: int, article_id: int):
                 finally:
                     db.close()
                 return {"gone": str(e), "title": sn.get("title") or "", "writer": sn.get("writer") or sa["writer_nickname"] or "",
-                        "writer_key": sn.get("writer_key") or "", "stopped": stopped,
+                        "writer_key": sn.get("writer_key") or sa["writer_key"] or "", "stopped": stopped,
                         "write_ts": sn.get("write_ts"), "html": body,
                         "comments": [{"id": i, "nick": c.get("nick"), "member_key": c.get("key"), "content": c.get("text"),
                                       "ts": None, "reply": False, "deleted": False, "writer": False}
