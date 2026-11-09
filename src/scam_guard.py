@@ -213,7 +213,8 @@ class ScamGuard:
                 hrefs = " ".join(re.findall(r'href="([^"]+)"', b.content_html))
                 ent = self.seen[k] = {"title": b.title, "body": b.content_text + chr(10) + hrefs,
                                       "writer_key": b.member_key or a.member_key,
-                                      "nick": b.writer_nickname, "cc": -1}
+                                      "nick": b.writer_nickname, "cc": -1,
+                                      "html": b.content_html, "write_ts": b.write_ts}
                 time.sleep(0.4)
             comments = []
             if a.comment_count != ent["cc"]:
@@ -230,7 +231,9 @@ class ScamGuard:
 
     def _act(self, db, client, cafe_id, menu_id, name, article_id, ent, comments, s):
         keys = accomplices(ent["writer_key"], comments)
-        snap = {"title": ent["title"], "body": ent["body"][:3000],
+        # 삭제하면 원문을 다시 볼 수 없으므로 원본 HTML·작성 정보까지 지우기 전에 저장한다
+        snap = {"title": ent["title"], "body": ent["body"][:20000], "html": ent.get("html", ""),
+                "write_ts": ent.get("write_ts"), "writer": ent["nick"], "writer_key": ent["writer_key"],
                 "comments": [{"nick": c.writer_nickname, "key": c.member_key, "text": c.content[:500]}
                              for c in comments], "score": s}
         deleted, msg = delete_article(client, cafe_id, article_id)

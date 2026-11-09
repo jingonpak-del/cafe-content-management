@@ -187,8 +187,19 @@ def guard_article(cafe_id: int, article_id: int):
             try:
                 r = db.conn.execute("SELECT title, writer_nickname, content_html FROM articles WHERE cafe_id=? AND article_id=?",
                                     (cafe_id, article_id)).fetchone()
+                sa = db.conn.execute("SELECT snapshot, writer_nickname FROM scam_action WHERE cafe_id=? AND article_id=?",
+                                     (cafe_id, article_id)).fetchone()
             finally:
                 db.close()
+            if sa and sa["snapshot"]:         # 사기글로 지운 글은 지우기 전에 저장한 원문을 보여 준다
+                import html as _h
+                sn = json.loads(sa["snapshot"])
+                body = sn.get("html") or "<div style='white-space:pre-wrap'>" + _h.escape(sn.get("body") or "") + "</div>"
+                return {"gone": str(e), "title": sn.get("title") or "", "writer": sn.get("writer") or sa["writer_nickname"] or "",
+                        "write_ts": sn.get("write_ts"), "html": body,
+                        "comments": [{"id": i, "nick": c.get("nick"), "member_key": c.get("key"), "content": c.get("text"),
+                                      "ts": None, "reply": False, "deleted": False, "writer": False}
+                                     for i, c in enumerate(sn.get("comments") or [])]}
             return {"gone": str(e), "title": r["title"] if r else "", "writer": r["writer_nickname"] if r else "",
                     "html": (r["content_html"] or "") if r else "", "comments": []}
         cs = cafe_api.fetch_comments(cafe_id, article_id, client=cl, max_pages=10)
