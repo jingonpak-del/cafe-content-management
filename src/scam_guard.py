@@ -24,7 +24,9 @@ GUARD_BOARDS = [
     (14793916, 1688, "마산맘"),
     (21031223, 1106, "김해줌마"),
 ]
-INTERVAL_S = 30
+INTERVAL_S = 5               # 등업게시판 목록 확인 간격 (11-09 30초→5초)
+LINK_INTERVAL_S = 30         # 광고 링크 댓글(전체 게시판)은 30초 유지
+BACKOFF_S = 60               # 목록 조회가 연달아 실패하면 잠시 늦춘다(차단 방지)
 RECHECK_MIN = 90            # 글 쓴 뒤 이 시간 동안은 매번 댓글을 다시 읽는다
 
 SHORT_LINK_RE = re.compile(
@@ -156,10 +158,13 @@ class ScamGuard:
         db = Database(self.w.db.path)
         db.conn.execute("PRAGMA busy_timeout=15000")
         ensure_tables(db)
-        self.w.log("  🛡 등업게시판 사기글 감시 시작 (30초 간격: "
+        self.w.log(f"  🛡 등업게시판 사기글 감시 시작 ({INTERVAL_S}초 간격: "
                    + ", ".join(n for _, _, n in GUARD_BOARDS) + ")")
+        last_link = 0.0
+        fails = 0
         while True:
             t0 = time.time()
+            err = False
             client = httpx.Client(headers=self.w.client.headers, cookies=self.w.client.cookies,
                                   timeout=12.0, follow_redirects=True)
             try:
@@ -167,17 +172,25 @@ class ScamGuard:
                     try:
                         self._check_board(db, client, cafe_id, menu_id, name)
                     except Exception as e:
+                        err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
-                try:
-                    self.links.tick(db, client)
-                except Exception as e:
-                    self.w.log(f"  ! 광고링크 댓글 감시 실패: {e}")
+                if t0 - last_link >= LINK_INTERVAL_S:
+                    last_link = t0
+                    try:
+                        self.links.tick(db, client)
+                    except Exception as e:
+                        self.w.log(f"  ! 광고링크 댓글 감시 실패: {e}")
                 db.set_meta("scam_guard_at", str(int(time.time())))
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")
             finally:
                 client.close()
-            time.sleep(max(3, INTERVAL_S - (time.time() - t0)))
+            fails = fails + 1 if err else 0
+            if fails >= 3:
+                self.w.log(f"  ! 사기글 감시 연속 실패 {fails}회 — {BACKOFF_S}초 쉬었다 재시도")
+                time.sleep(BACKOFF_S)
+                continue
+            time.sleep(max(1, INTERVAL_S - (time.time() - t0)))
 
     def _check_board(self, db, client, cafe_id, menu_id, name):
         arts = cafe_api.fetch_article_list(cafe_id, menu_id=menu_id, per_page=20, client=client)
@@ -203,9 +216,11 @@ class ScamGuard:
                                       "nick": b.writer_nickname, "cc": -1}
                 time.sleep(0.4)
             comments = []
-            if a.comment_count != ent["cc"] or a.comment_count:
-                comments = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
+            if a.comment_count != ent["cc"]:
+                comments = ent["comments"] = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
                 ent["cc"] = a.comment_count
+            else:
+                comments = ent.get("comments", [])
                 time.sleep(0.4)
             s = score(ent["title"], ent["body"], comments)
             if s["hit"]:

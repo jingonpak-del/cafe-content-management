@@ -123,6 +123,7 @@ class LinkGuard:
         self.w = watcher
         self.cc: dict[tuple[int, int], int] = {}     # 글별 마지막 댓글 수
         self.db_mark = 0
+        self.row_mark = 0
 
     def tick(self, db: Database, client: httpx.Client):
         ensure_tables(db)
@@ -157,19 +158,25 @@ class LinkGuard:
             if len(self.cc) > 3000:
                 self.cc = dict(list(self.cc.items())[-1500:])
         # 메인 감시가 모은 댓글(재방문 등)
-        since = self.db_mark or int(time.time() * 1000) - 3600 * 1000
+        # crawled_at 에는 인덱스가 없어 680만 건을 훑느라 45초씩 걸렸다 → rowid 범위로 새로 들어온 행만 본다
+        top = db.conn.execute("SELECT MAX(rowid) FROM comments").fetchone()[0] or 0
+        since = int(time.time() * 1000) - 3600 * 1000
+        if not self.row_mark:
+            self.row_mark = max(0, top - 30000)
         for cafe_id, aid, cid, mk, nick, content, menu_id, title in db.conn.execute(
                 f"""SELECT c.cafe_id, c.article_id, c.comment_id, c.member_key, c.writer_nickname, c.content,
                            a.menu_id, a.title FROM comments c
                     LEFT JOIN articles a ON a.cafe_id=c.cafe_id AND a.article_id=c.article_id
-                    WHERE c.cafe_id IN ({",".join(str(c) for c, _ in CAFES)}) AND c.crawled_at > ?
-                      AND c.is_deleted=0 AND c.content LIKE '%.%'""", (since,)).fetchall():
+                    WHERE c.rowid > ? AND c.rowid <= ? AND c.cafe_id IN ({",".join(str(c) for c, _ in CAFES)})
+                      AND c.crawled_at > ? AND c.is_deleted=0 AND c.content LIKE '%.%'""",
+                (self.row_mark, top, since)).fetchall():
             k2 = classify(content, auto, flag) if mk else None
             if k2 and k2[0] == "auto":
                 hits.setdefault((cafe_id, mk), {"nick": nick, "domains": set(), "extra": {}})["domains"].add(k2[1])
             elif k2:
                 flags.append((cafe_id, aid, cid, menu_id, mk, nick, k2[1], content, title))
         self.db_mark = int(time.time() * 1000)
+        self.row_mark = top
         for (cafe_id, mk), h in hits.items():
             self.punish(db, client, cafe_id, mk, h["nick"], h["domains"],
                         lambda t: any(_match(d, auto) for d in domains_in(t)), h["extra"])
