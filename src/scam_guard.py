@@ -53,6 +53,25 @@ def _norm(t: str) -> str:
     return _DOTTED_RE.sub("", INVISIBLE_RE.sub("", t))
 
 
+# 본문이 이미지뿐이라 주식어가 없는 유형(11-09 실측: 자삭·삭제된 글에서 놓친 것들) — 제목으로 잡는다
+#  · 운영진 사칭 공지: "📌카페 커뮤니티 개설안내 줌마렐라 매니저 님이 함께", "📢<긴급공지> 스터디방 개설"
+#  · 토스 이벤트 낚시: "토 스 미국 나스닥 상장 기념 1인당 5만원 현금"
+IMPERSONATE_RE = re.compile(
+    r"(매니[저져]|운영진|긴급\s?공지|공지\s?팀|스페셜\s?게스트|커뮤니티\s?(개설|안내|공지)|스터디\s?(그룹|방|개설)|공식\s?스터디|"
+    r"폭락장\s?(대비|대응))")
+TOSS_BAIT_RE = re.compile(r"토\s?스.{0,20}(5\s?만\s?원|나스닥|현금|무료\s?주식)")
+
+
+def title_suspect(title: str) -> str:
+    """제목만으로 보는 사기 의심 사유(없으면 빈 문자열)."""
+    t = _norm(title or "")
+    if IMPERSONATE_RE.search(t) and (re.search(r"^[\W_]*[📢📌✅🔥🚨💰]", t) or "줌마렐라" in t or "카페" in t):
+        return "운영진 사칭 공지형 제목"
+    if TOSS_BAIT_RE.search(t):
+        return "토스 이벤트 낚시형 제목"
+    return ""
+
+
 def score(title: str, body: str, comments: list) -> dict:
     """점수·판정 근거. hit=True 면 차단 대상."""
     raw = f"{title}\n{body}\n" + "\n".join(c.content for c in comments if not c.is_deleted)
@@ -69,6 +88,10 @@ def score(title: str, body: str, comments: list) -> dict:
     elif len(stock) >= 3:       # 등업글 1만8천건 실측: 정상글 중 3개 이상은 2건(둘 다 홍보성)
         hit = True
         reasons.append(f"주식어 {len(stock)}개({', '.join(stock[:6])})")
+    ts = title_suspect(title)
+    if ts and not hit:
+        hit = True
+        reasons.append(ts)
     return {"hit": hit, "stock": stock, "bait": bait, "links": links,
             "invisible": invisible, "reasons": reasons}
 
@@ -134,6 +157,12 @@ def ensure_tables(db: Database):
         deleted INTEGER DEFAULT 0, stopped INTEGER DEFAULT 0, released INTEGER DEFAULT 0,
         result TEXT, created_at INTEGER,
         UNIQUE(cafe_id, article_id)
+    );
+    CREATE TABLE IF NOT EXISTS guard_stop (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cafe_id INTEGER, member_key TEXT, nickname TEXT, reason TEXT,
+        released INTEGER DEFAULT 0, created_at INTEGER,
+        UNIQUE(cafe_id, member_key)
     );
     """)
     db.conn.commit()

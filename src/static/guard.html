@@ -41,6 +41,10 @@
   button.b { border: 1px solid #ccc; background: #fff; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
   button.red { background: #e5484d; color: #fff; border-color: #e5484d; }
   button.green { background: #2f9e44; color: #fff; border-color: #2f9e44; }
+  .who { display: flex; align-items: center; gap: 8px; padding: 6px 4px; border-bottom: 1px solid #f0f0f0; }
+  .who .nm { flex: 1; }
+  .tag { display: inline-block; border-radius: 4px; padding: 0 5px; font-size: 11px; background: #eee; color: #555; }
+  .tag.stop { background: #ffe1e1; color: #c00; }
   .empty { color: #888; padding: 30px; text-align: center; }
   #domains { padding: 8px 12px; border-top: 1px solid #ddd; font-size: 12px; }
   #domains input { width: 150px; }
@@ -73,7 +77,7 @@
 <script>
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const t = ms => ms ? new Date(ms).toLocaleString('ko-KR', {month:'numeric', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
-let tab = 'flags', S = {}, L = {}, sel = null;
+let tab = 'flags', S = {}, L = {}, sel = null, SD = [], P = [], cur = null;
 
 async function load() {
   [S, L] = await Promise.all([fetch('/api/scam/status').then(r => r.json()), fetch('/api/linkspam/status').then(r => r.json())]);
@@ -120,10 +124,20 @@ function renderList() {
         ${a.released ? '<span class="sub">해제됨</span>' : `<button class="b" onclick="event.stopPropagation();scamRelease(${a.id})">정지 해제</button>`}
       </div>`).join('') || '<div class="empty">차단 내역 없음</div>';
   } else {
+    const gs = {};
+    S.selfdel.forEach(a => (gs[a.cafe_id + '|' + a.member_key] ||= []).push(a));
+    SD = Object.values(gs).sort((x, y) => (y.some(a => a.suspect) - x.some(a => a.suspect)) || (y[0].deleted_at - x[0].deleted_at));
+    const todo = SD.filter(g => g.some(a => a.suspect) && !g[0].stopped);
     h = (S.new_selfdel ? `<div style="padding:8px 12px"><button class="b green" onclick="ack()">새 자삭 모두 확인함</button></div>` : '')
-      + S.selfdel.map(a => `<div class="item" style="${a.new ? 'background:#fff3f3' : ''}" onclick="pickArticle(${a.cafe_id},${a.article_id},{})">
-        <div><b>${esc(a.title)}</b></div>
-        <div class="sub">${esc(a.cafe_name)} · ${esc(a.writer_nickname)} ${esc(a.member_tag || '')} · ${t(a.deleted_at)} · ${a.delete_type === 'self' ? '자삭 확정' : '삭제 감지'}</div>
+      + (todo.length ? `<div style="padding:8px 12px;background:#fff3f3"><button class="b red" onclick="stopSuspects()">사기 의심 글쓴이 ${todo.length}명 모두 활동정지</button>
+          <div class="sub">제목이 운영진 사칭·토스 이벤트형인 글을 쓴 계정입니다. 개별 확인은 아래 글을 눌러 보세요.</div></div>` : '')
+      + SD.map((g, i) => `<div class="item" style="${g.some(a => a.new) ? 'background:#fff3f3' : ''}">
+        <div><b>${esc(g[0].writer_nickname)}</b> <span class="sub">${esc(g[0].cafe_name)} · ${g.length}건 · ${t(g[0].deleted_at)}</span>
+          ${g.some(a => a.suspect) ? '<span class="tag stop">사기 의심</span>' : ''}
+          ${g[0].stopped ? '<span class="tag stop">정지됨</span>' : `<button class="b" style="float:right;padding:2px 8px" onclick="stopGroup(${i})">활동정지</button>`}</div>
+        ${g.slice(0, 4).map(a => `<div class="cm" onclick="pickArticle(${a.cafe_id},${a.article_id},{})">${esc(a.title.slice(0, 34))}
+          <span class="sub">${a.delete_type === 'self' ? '자삭' : '삭제 감지'}${a.suspect ? ' · ' + esc(a.suspect) : ''}</span></div>`).join('')}
+        ${g.length > 4 ? `<div class="sub">… 외 ${g.length - 4}건</div>` : ''}
       </div>`).join('') || '<div class="empty">최근 7일 자삭 없음</div>';
   }
   el.innerHTML = h;
@@ -165,10 +179,46 @@ async function pickArticle(cafe_id, article_id, s, hitComment) {
       ${a.comments.map(c => `<div class="c ${c.reply ? 'reply' : ''} ${c.deleted ? 'del' : ''} ${mk && c.member_key === mk ? 'mine' : ''} ${c.id === hitComment ? 'hit' : ''}" id="c${c.id}">
         <span class="n">${esc(c.nick)}</span>${c.writer ? ' <span class="dom">작성자</span>' : ''} <span style="color:#999;font-size:12px">${t(c.ts)}</span>
         <div class="x">${esc(c.content)}</div></div>`).join('') || '<div class="empty">댓글 없음</div>'}</div>`;
+  cur = {cafe_id, article_id, s, hitComment};
+  const stopped = new Set(a.stopped || []);
+  const seenK = new Set(); P = [];
+  if (a.writer_key) { P.push({key: a.writer_key, nick: a.writer, role: '글쓴이'}); seenK.add(a.writer_key); }
+  a.comments.forEach(c => { if (c.member_key && !seenK.has(c.member_key)) { seenK.add(c.member_key); P.push({key: c.member_key, nick: c.nick, role: '댓글'}); } });
+  P.forEach(m => m.cnt = a.comments.filter(c => c.member_key === m.key).length);
+  view.insertAdjacentHTML('afterbegin', `<div class="card"><b>글쓴이·댓글 작성자 ${P.length}명</b> <span class="sub" style="color:#666;font-size:12px">— 보고 판단해서 활동정지</span>
+    ${P.map((m, i) => `<div class="who"><span class="nm"><b>${esc(m.nick)}</b> <span class="tag">${m.role}${m.role === '댓글' ? ' ' + m.cnt + '개' : ''}</span></span>
+      ${stopped.has(m.key) ? '<span class="tag stop">정지됨</span>' : `<button class="b red" style="padding:3px 10px" onclick="stopOne(${i})">활동정지</button>`}</div>`).join('') || '<div class="empty">없음</div>'}</div>`);
   const fr = document.getElementById('body');
   fr.srcdoc = `<base target="_blank"><style>body{font:14px/1.6 sans-serif;margin:0}img{max-width:100%;height:auto}</style>${a.html || '<p style="color:#888">본문 없음</p>'}`;
   fr.onload = () => { fr.style.height = (fr.contentDocument.body.scrollHeight + 20) + 'px';
     if (hitComment) document.getElementById('c' + hitComment)?.scrollIntoView({block: 'center'}); };
+}
+
+async function doStop(cafe_id, members, reason) {
+  const r = await fetch('/api/guard/stop', {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({cafe_id, members, reason})}).then(r => r.json());
+  if (r.error) { alert(r.error); return false; }
+  if (r.failures?.length) alert('일부 실패: ' + JSON.stringify(r.failures).slice(0, 200));
+  return true;
+}
+async function stopOne(i) {
+  const m = P[i];
+  if (!confirm(`${m.nick} 계정을 활동정지할까요? (해제는 카페 관리에서)`)) return;
+  if (await doStop(cur.cafe_id, [{key: m.key, nick: m.nick}], '/guard 수동')) { await load(); pickArticle(cur.cafe_id, cur.article_id, cur.s, cur.hitComment); }
+}
+async function stopGroup(i) {
+  const g = SD[i];
+  if (!confirm(`${g[0].writer_nickname} 계정을 활동정지할까요? (자삭 ${g.length}건)`)) return;
+  if (await doStop(g[0].cafe_id, [{key: g[0].member_key, nick: g[0].writer_nickname}], '/guard 자삭 계정')) load();
+}
+async function stopSuspects() {
+  const todo = SD.filter(g => g.some(a => a.suspect) && !g[0].stopped);
+  if (!confirm(`사기 의심 글쓴이 ${todo.length}명을 모두 활동정지할까요?
+` + todo.map(g => g[0].writer_nickname).join(', ').slice(0, 300))) return;
+  const by = {};
+  todo.forEach(g => (by[g[0].cafe_id] ||= []).push({key: g[0].member_key, nick: g[0].writer_nickname}));
+  for (const c of Object.keys(by)) if (!(await doStop(+c, by[c], '/guard 자삭 사기의심 일괄'))) break;
+  load();
 }
 
 async function decide(action) {

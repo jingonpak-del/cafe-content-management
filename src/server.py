@@ -174,6 +174,51 @@ def guard_page():
     return (STATIC / "guard.html").read_text(encoding="utf-8")
 
 
+def _stopped_keys(db, cafe_id: int) -> set:
+    """이 카페에서 지금 활동정지로 기록된 계정(사기글·링크·직접 정지)."""
+    import json as _json
+    ks = set()
+    for r in db.conn.execute("SELECT member_key FROM guard_stop WHERE cafe_id=? AND released=0", (cafe_id,)):
+        ks.add(r[0])
+    for r in db.conn.execute("SELECT member_keys FROM scam_action WHERE cafe_id=? AND stopped>0 AND released=0", (cafe_id,)):
+        ks.update(_json.loads(r[0] or "[]"))
+    for r in db.conn.execute("SELECT member_key FROM link_spam_action WHERE cafe_id=? AND stopped>0 AND released=0", (cafe_id,)):
+        ks.add(r[0])
+    return ks
+
+
+@app.post("/api/guard/stop")
+def guard_stop(body: dict):
+    """/guard 화면에서 사람이 고른 계정을 활동정지 {cafe_id, members:[{key, nick}], reason}."""
+    import time as _t
+    from . import cafe_api, scam_guard
+    cafe_id = int(body.get("cafe_id") or 0)
+    members = [m for m in (body.get("members") or []) if m.get("key")]
+    if not cafe_id or not members:
+        return JSONResponse({"error": "대상 없음"}, status_code=400)
+    db = _db()
+    try:
+        scam_guard.ensure_tables(db)
+        cl = cafe_api.make_client(SESSION_MGR.load_cookies(_load_config().get("account_id")))
+        try:
+            ok, fails = scam_guard.stop_members(cl, cafe_id, [m["key"] for m in members])
+        except cafe_api.StudioAuthRequired:
+            return JSONResponse({"error": "카페 스튜디오 본인인증이 필요합니다"}, status_code=409)
+        finally:
+            cl.close()
+        failed = {str(f) for f in fails}
+        for m in members:
+            if ok and not any(m["key"] in x for x in failed):
+                db.conn.execute(
+                    """INSERT INTO guard_stop(cafe_id, member_key, nickname, reason, created_at) VALUES(?,?,?,?,?)
+                       ON CONFLICT(cafe_id, member_key) DO UPDATE SET released=0, created_at=excluded.created_at""",
+                    (cafe_id, m["key"], m.get("nick") or "", body.get("reason") or "", int(_t.time() * 1000)))
+        db.conn.commit()
+        return {"ok": True, "stopped": ok, "failures": fails}
+    finally:
+        db.close()
+
+
 @app.get("/api/guard/article/{cafe_id}/{article_id}")
 def guard_article(cafe_id: int, article_id: int):
     """카페에서 지금 상태 그대로 본문·댓글을 읽어 온다(삭제됐으면 DB 기록으로)."""
@@ -195,15 +240,35 @@ def guard_article(cafe_id: int, article_id: int):
                 import html as _h
                 sn = json.loads(sa["snapshot"])
                 body = sn.get("html") or "<div style='white-space:pre-wrap'>" + _h.escape(sn.get("body") or "") + "</div>"
+                db = _db()
+                try:
+                    stopped = list(_stopped_keys(db, cafe_id))
+                finally:
+                    db.close()
                 return {"gone": str(e), "title": sn.get("title") or "", "writer": sn.get("writer") or sa["writer_nickname"] or "",
+                        "writer_key": sn.get("writer_key") or "", "stopped": stopped,
                         "write_ts": sn.get("write_ts"), "html": body,
                         "comments": [{"id": i, "nick": c.get("nick"), "member_key": c.get("key"), "content": c.get("text"),
                                       "ts": None, "reply": False, "deleted": False, "writer": False}
                                      for i, c in enumerate(sn.get("comments") or [])]}
+            db = _db()
+            try:
+                stopped = list(_stopped_keys(db, cafe_id))
+                wk = db.conn.execute("SELECT member_key FROM articles WHERE cafe_id=? AND article_id=?",
+                                     (cafe_id, article_id)).fetchone()
+            finally:
+                db.close()
             return {"gone": str(e), "title": r["title"] if r else "", "writer": r["writer_nickname"] if r else "",
+                    "writer_key": wk[0] if wk else "", "stopped": stopped,
                     "html": (r["content_html"] or "") if r else "", "comments": []}
         cs = cafe_api.fetch_comments(cafe_id, article_id, client=cl, max_pages=10)
+        db = _db()
+        try:
+            stopped = list(_stopped_keys(db, cafe_id))
+        finally:
+            db.close()
         return {"title": b.title, "writer": b.writer_nickname, "writer_key": b.member_key, "menu_id": b.menu_id,
+                "stopped": stopped,
                 "write_ts": b.write_ts, "html": b.content_html,
                 "comments": [{"id": c.comment_id, "nick": c.writer_nickname, "member_key": c.member_key,
                               "content": c.content, "ts": c.update_ts, "reply": c.is_reply,
@@ -1945,7 +2010,7 @@ def scam_status():
         args = [x for c, m, _ in boards for x in (c, m)]
         names = {c: n for c, _, n in boards}
         selfdel = [dict(r) for r in db.conn.execute(
-            f"""SELECT a.cafe_id, a.article_id, a.current_title AS title, a.writer_nickname,
+            f"""SELECT a.cafe_id, a.article_id, a.current_title AS title, a.writer_nickname, a.member_key,
                        a.member_tag, a.write_ts, a.deleted_at, a.delete_type
                 FROM articles a
                 WHERE a.status='deleted' AND COALESCE(a.delete_type,'')!='staff' AND ({cond})
@@ -1954,9 +2019,12 @@ def scam_status():
                                   WHERE s.cafe_id=a.cafe_id AND s.article_id=a.article_id)
                 ORDER BY a.deleted_at DESC LIMIT 100""",
             args + [int(_t.time() * 1000) - 7 * 86400000])]
+        stop_by_cafe = {c: _stopped_keys(db, c) for c, _, _ in boards}
         for r in selfdel:
             r["cafe_name"] = names.get(r["cafe_id"], "")
             r["new"] = r["deleted_at"] > ack
+            r["suspect"] = scam_guard.title_suspect(r["title"])
+            r["stopped"] = r["member_key"] in stop_by_cafe.get(r["cafe_id"], ())
         acts = [dict(r) for r in db.conn.execute(
             """SELECT id, cafe_id, article_id, title, writer_nickname, member_keys, reasons,
                       deleted, stopped, released, result, created_at

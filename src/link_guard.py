@@ -128,6 +128,8 @@ class LinkGuard:
     def tick(self, db: Database, client: httpx.Client):
         ensure_tables(db)
         auto, flag = load_block(db)
+        flag = set(flag) | set(auto)      # 11-09: da24 등 자동 도메인도 사람이 확인한 뒤 처리 → 전부 확인 대기
+        auto = set()
         hits: dict[tuple[int, str], dict] = {}
         flags = []
         for cafe_id, name in CAFES:
