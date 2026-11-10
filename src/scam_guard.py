@@ -76,9 +76,14 @@ def title_suspect(title: str) -> str:
 
 # 11-11: 낮은 등급이 운영진 행세 닉네임을 쓰는 경우. 우리는 스탭 아이디로만 글을 올리므로 스탭이 아닌 계정이
 # 닉네임에 아래 단어를 쓰고 공지·이벤트 꼴 글을 올리면 사칭으로 본다(등업글 1만9천건 검증: 걸린 44건 전부 사기글)
-NICK_WORD_RE = re.compile(r"(줌마\s?렐라|공\s?지|관\s?리\s?팀|운\s?영|매니[저져])")
+NICK_WORD_RE = re.compile(r"(줌마\s?렐라|공\s?지|관\s?리\s?팀|운\s?영|매니[저져]|manager|admin)", re.I)
 ANN_EMOJI_RE = re.compile(r"^[\W_]*[📢📌✅🔥🚨💰💌🎈🎁🎇🔴]")
-ANN_WORD_RE = re.compile(r"(이벤트|콜라보|공지|안내|개설|스터디|필독|긴급|특별|협업|공식)")
+ANN_WORD_RE = re.compile(r"(이벤트|콜라보|공지|안내|개설|스터디|필독|긴급|특별|협업|공식|지침|방침|전달드립)")
+
+# 등업게시판 기본 양식(스탭이 본문 맨 위에 넣어 두는 안내문). 정상 글은 이 양식 아래에 사진+글을 쓴다
+FORM_RE = re.compile(r"양식\s?확인|등업\s?방법")
+# 본문에서 직접 카페 운영진이라고 자처하는 말(11-11 'CafeManager' 글: "안녕하세요. 카페 매니저 멘토 모건입니다")
+CLAIM_RE = re.compile(r"(카페\s?매니[저져]|운영진|공지팀|매니[저져]\s?[가-힣]{2,4}\s?입니다)")
 
 
 def nick_suspect(nick: str, title: str, text_len: int, has_image: bool) -> str:
@@ -375,13 +380,22 @@ class ScamGuard:
                 if ns:
                     s["hit"] = True
                     s["reasons"].append(ns)
+                elif not FORM_RE.search(ent["body"]):
+                    if CLAIM_RE.search(ent["body"]):
+                        s["hit"] = True
+                        s["reasons"].append("본문에서 카페 매니저·운영진을 자처(등업 양식 없음)")
+                    elif ent.get("tlen", 999) < 5 and ent.get("img"):
+                        # 사진만 있고 양식·글이 없는 글: 지우되 계정 정지는 사람이 확인한 뒤(60일 검증: 39건 중 정상 1건)
+                        s["hit"] = True
+                        s["soft"] = True
+                        s["reasons"].append("사진만 있고 등업 양식·본문이 없음(확인 요청)")
             if s["hit"]:
                 self._act(db, client, cafe_id, menu_id, name, a.article_id, ent, comments, s)
         for k in [k for k in self.seen if k[0] == cafe_id and k not in live]:
             self.seen.pop(k, None)
 
     def _act(self, db, client, cafe_id, menu_id, name, article_id, ent, comments, s):
-        keys = accomplices(ent["writer_key"], comments)
+        keys = [] if s.get("soft") else accomplices(ent["writer_key"], comments)
         # 삭제하면 원문을 다시 볼 수 없으므로 원본 HTML·작성 정보까지 지우기 전에 저장한다
         snap = {"title": ent["title"], "body": ent["body"][:20000], "html": ent.get("html", ""),
                 "write_ts": ent.get("write_ts"), "writer": ent["nick"], "writer_key": ent["writer_key"],
