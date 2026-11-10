@@ -218,6 +218,10 @@ class ScamGuard:
         self.w.log(f"  🔗 광고 링크 댓글 감시 시작 (별도 스레드, {LINK_INTERVAL_S}초 간격)")
         while True:
             t0 = time.time()
+            try:
+                db.conn.rollback()
+            except Exception:
+                pass
             client = httpx.Client(headers=self.w.client.headers, cookies=self.w.client.cookies,
                                   timeout=12.0, follow_redirects=True)
             try:
@@ -256,6 +260,10 @@ class ScamGuard:
         while gen == self.gen:
             t0 = time.time()
             err = False
+            try:
+                db.conn.rollback()      # 지난 바퀴에 남은 읽기 스냅샷이 쓰기를 막지 않게(WAL 에서 'database is locked' 반복의 원인)
+            except Exception:
+                pass
             client = httpx.Client(headers=self.w.client.headers, cookies=self.w.client.cookies,
                                   timeout=12.0, follow_redirects=True)
             try:
@@ -271,8 +279,14 @@ class ScamGuard:
                 LAST_BEAT = self.beat          # 화면 표시는 메모리 기준(DB 가 다른 쓰기에 잠겨도 멈춤으로 보이지 않게)
                 try:
                     db.set_meta("scam_guard_at", str(int(time.time())))
-                except sqlite3.OperationalError:
-                    pass                       # database is locked — 다음 바퀴에 다시 적는다
+                except sqlite3.OperationalError as e:
+                    _errlog("heartbeat", e)    # database is locked — 연결을 새로 열어 다음 바퀴에 다시 적는다
+                    try:
+                        db.close()
+                    except Exception:
+                        pass
+                    db = Database(self.w.db.path)
+                    db.conn.execute("PRAGMA busy_timeout=15000")
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")
                 _errlog("loop", e)
