@@ -191,6 +191,8 @@ class ScamGuard:
     def __init__(self, watcher):
         self.w = watcher
         self.thread: threading.Thread | None = None
+        self.gen = 0                 # 감시 스레드 세대(워치독이 새로 띄우면 올라가고, 옛 스레드는 스스로 끝낸다)
+        self.beat = time.time()      # 마지막으로 한 바퀴 끝낸 시각(메모리 기준, DB 와 무관)
         self.seen: dict[tuple[int, int], dict] = {}   # 최근 글 캐시(본문)
         from .link_guard import LinkGuard
         self.links = LinkGuard(watcher)
@@ -198,8 +200,9 @@ class ScamGuard:
     def start(self):
         if self.thread is not None and self.thread.is_alive():
             return
-        self.thread = threading.Thread(target=self._loop, name="scam-guard", daemon=True)
+        self.thread = threading.Thread(target=self._loop, args=(self.gen,), name="scam-guard", daemon=True)
         self.thread.start()
+        threading.Thread(target=self._watchdog, name="scam-watchdog", daemon=True).start()
         # 링크 댓글 감시는 따로 돌린다(같은 바퀴에 끼면 등업글 확인이 7초로 늘어났음)
         self.link_thread = threading.Thread(target=self._link_loop, name="link-guard", daemon=True)
         self.link_thread.start()
@@ -221,7 +224,24 @@ class ScamGuard:
                 client.close()
             time.sleep(max(1, LINK_INTERVAL_S - (time.time() - t0)))
 
-    def _loop(self):
+    def _watchdog(self):
+        """감시 스레드가 죽었거나 90초 넘게 한 바퀴도 못 끝내면 새로 띄운다."""
+        while True:
+            time.sleep(20)
+            try:
+                dead = self.thread is None or not self.thread.is_alive()
+                stale = time.time() - self.beat > 90
+                if dead or stale:
+                    self.gen += 1
+                    self.beat = time.time()
+                    self.w.log(f"  ⚠ 사기글 감시 {'스레드 종료' if dead else '정체'} 감지 — 새로 시작(세대 {self.gen})")
+                    _errlog("watchdog", RuntimeError("dead" if dead else "stale"))
+                    self.thread = threading.Thread(target=self._loop, args=(self.gen,), name="scam-guard", daemon=True)
+                    self.thread.start()
+            except Exception as e:
+                _errlog("watchdog", e)
+
+    def _loop(self, gen: int = 0):
         time.sleep(5)
         db = Database(self.w.db.path)
         db.conn.execute("PRAGMA busy_timeout=15000")
@@ -229,7 +249,7 @@ class ScamGuard:
         self.w.log(f"  🛡 등업게시판 사기글 감시 시작 ({INTERVAL_S}초 간격: "
                    + ", ".join(n for _, _, n in GUARD_BOARDS) + ")")
         fails = 0
-        while True:
+        while gen == self.gen:
             t0 = time.time()
             err = False
             client = httpx.Client(headers=self.w.client.headers, cookies=self.w.client.cookies,
@@ -242,6 +262,7 @@ class ScamGuard:
                         err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
                         _errlog(name, e)
+                self.beat = time.time()
                 db.set_meta("scam_guard_at", str(int(time.time())))
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")
