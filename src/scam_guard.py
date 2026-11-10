@@ -189,6 +189,26 @@ class ScamGuard:
             return
         self.thread = threading.Thread(target=self._loop, name="scam-guard", daemon=True)
         self.thread.start()
+        # 링크 댓글 감시는 따로 돌린다(같은 바퀴에 끼면 등업글 확인이 7초로 늘어났음)
+        self.link_thread = threading.Thread(target=self._link_loop, name="link-guard", daemon=True)
+        self.link_thread.start()
+
+    def _link_loop(self):
+        time.sleep(10)
+        db = Database(self.w.db.path)
+        db.conn.execute("PRAGMA busy_timeout=15000")
+        self.w.log(f"  🔗 광고 링크 댓글 감시 시작 (별도 스레드, {LINK_INTERVAL_S}초 간격)")
+        while True:
+            t0 = time.time()
+            client = httpx.Client(headers=self.w.client.headers, cookies=self.w.client.cookies,
+                                  timeout=12.0, follow_redirects=True)
+            try:
+                self.links.tick(db, client)
+            except Exception as e:
+                self.w.log(f"  ! 광고링크 댓글 감시 실패: {e}")
+            finally:
+                client.close()
+            time.sleep(max(1, LINK_INTERVAL_S - (time.time() - t0)))
 
     def _loop(self):
         time.sleep(5)
@@ -197,7 +217,6 @@ class ScamGuard:
         ensure_tables(db)
         self.w.log(f"  🛡 등업게시판 사기글 감시 시작 ({INTERVAL_S}초 간격: "
                    + ", ".join(n for _, _, n in GUARD_BOARDS) + ")")
-        last_link = 0.0
         fails = 0
         while True:
             t0 = time.time()
@@ -211,12 +230,6 @@ class ScamGuard:
                     except Exception as e:
                         err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
-                if t0 - last_link >= LINK_INTERVAL_S:
-                    last_link = t0
-                    try:
-                        self.links.tick(db, client)
-                    except Exception as e:
-                        self.w.log(f"  ! 광고링크 댓글 감시 실패: {e}")
                 db.set_meta("scam_guard_at", str(int(time.time())))
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")

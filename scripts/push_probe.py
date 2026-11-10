@@ -53,6 +53,13 @@ def records(text: str, pkg: str):
         w = re.search(r"\bwhen=(\d{12,})", line)
         if w and not cur["when"]:
             cur["when"] = w.group(1)
+        if "Push_Payload_Json=" in line:      # 네이버가 보낸 푸시 원문(글 번호·발송 시각 포함)
+            m2 = re.search(r"Push_Payload_Json=String \((\{.*\})\)\s*$", line.strip())
+            if m2:
+                try:
+                    cur["payload"] = json.loads(m2.group(1))
+                except Exception:
+                    pass
         # 알림을 눌렀을 때 열릴 주소(글 번호가 들어 있을 수 있다)
         if "contentIntent" in line or "dat=" in line or "articleid" in line.lower():
             cur["raw"].append(line.strip()[:300])
@@ -80,7 +87,7 @@ def watch(serial: str, pkg: str):
             if first:          # 시작 시점에 이미 떠 있던 알림은 기준만 잡는다
                 continue
             row = {"seen_at": int(time.time() * 1000), "pkg": pkg, "key": r["key"], "when": r["when"],
-                   **r["fields"], "intent": r["raw"][:3]}
+                   **r["fields"], "payload": r.get("payload"), "intent": r["raw"][:3]}
             with OUT.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
             print("  🔔", time.strftime("%H:%M:%S"), r["fields"].get("title", ""), "|", r["fields"].get("text", "")[:60], flush=True)
@@ -89,22 +96,35 @@ def watch(serial: str, pkg: str):
 
 
 def report():
-    """알림이 글 작성 뒤 몇 초 만에 왔는지: 제목이 같은 등업글을 DB 에서 찾아 비교."""
+    """푸시(messageKey)별로 글 작성 → 푸시 발송 → 폰 수신 → PC 포착 시각과, 우리 감시의 첫 발견 시각을 비교."""
     db = sqlite3.connect(ROOT / "data" / "gamsi.db")
-    rows = [json.loads(l) for l in OUT.read_text(encoding="utf-8").splitlines() if l.strip()]
-    lat = []
-    for r in rows:
-        txt = (r.get("text") or r.get("bigText") or "")
-        hit = db.execute("SELECT title, write_ts FROM articles WHERE menu_id IN (1688,1106) AND write_ts>? "
-                         "AND instr(?, substr(title,1,12))>0 ORDER BY write_ts DESC LIMIT 1",
-                         (r["seen_at"] - 3600_000, txt + " " + (r.get("title") or ""))).fetchone()
-        d = (r["seen_at"] - hit[1]) / 1000 if hit else None
-        lat.append(d)
-        print(time.strftime("%m-%d %H:%M:%S", time.localtime(r["seen_at"] / 1000)), r.get("title", "")[:20],
-              "| 글→알림", f"{d:.0f}초" if d is not None else "(글 못 찾음)")
-    ok = sorted(x for x in lat if x is not None)
-    if ok:
-        print(f"\n건수 {len(ok)} · 중앙값 {ok[len(ok)//2]:.0f}초 · 최대 {ok[-1]:.0f}초")
+    seen: dict[str, dict] = {}
+    for l in OUT.read_text(encoding="utf-8").splitlines():
+        if not l.strip():
+            continue
+        r = json.loads(l)
+        pl = r.get("payload") or {}
+        if not pl.get("articleId"):
+            continue
+        seen.setdefault(str(pl.get("messageKey")), {**pl, "seen_at": r["seen_at"]})
+    rows = []
+    for k, pl in seen.items():
+        a = db.execute("SELECT write_ts, first_seen_at, title FROM articles WHERE cafe_id=? AND article_id=?",
+                       (pl["cafeId"], pl["articleId"])).fetchone()
+        if not a:
+            continue
+        ws, fs = a[0], a[1]
+        rows.append((ws, (pl["sentAt"] - ws) / 1000, (pl["receivedAt"] - ws) / 1000,
+                     (pl["seen_at"] - ws) / 1000, (fs - ws) / 1000 if fs else None, a[2]))
+    rows.sort()
+    print("작성시각   푸시발송 폰수신 PC포착 | 우리감시발견(초, 글 작성 기준)")
+    for ws, snt, rcv, pc, our, t in rows:
+        print(time.strftime("%m-%d %H:%M:%S", time.localtime(ws / 1000)),
+              f"{snt:6.1f} {rcv:6.1f} {pc:6.1f} | {our if our is None else round(our, 1)}  {t[:16]}")
+    if rows:
+        med = lambda xs: sorted(xs)[len(xs) // 2]
+        print(f"\n건수 {len(rows)} · 푸시발송 중앙값 {med([r[1] for r in rows]):.1f}초 · 폰수신 {med([r[2] for r in rows]):.1f}초 · "
+              f"PC포착 {med([r[3] for r in rows]):.1f}초 · 우리감시 {med([r[4] for r in rows if r[4] is not None]):.1f}초")
 
 
 if __name__ == "__main__":
