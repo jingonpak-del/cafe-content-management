@@ -316,9 +316,36 @@ class Watcher:
             except Exception as e:
                 self.log(f"  ! 이벤트 발행 실패: {e}")
 
+    def _reopen_db(self, err):
+        """11-10 19:28~11-11 06:10 수집이 11시간 멈춘 원인: DB 연결 하나가 'database is locked' 에 걸려 풀리지 않았다.
+        (다른 연결로는 쓰기가 되는데 이 연결만 계속 실패 — 옛 읽기 스냅샷이 남은 경우) 연결을 새로 연다."""
+        import sqlite3 as _sq
+        from pathlib import Path as _P
+        try:
+            with open(_P(self.db.path).parent / "watcher_error.log", "a", encoding="utf-8") as f:
+                f.write(time.strftime("%m-%d %H:%M:%S") + f" {type(err).__name__}: {err}" + chr(10))
+        except Exception:
+            pass
+        try:
+            self.db.conn.close()
+        except Exception:
+            pass
+        conn = _sq.connect(str(self.db.path), check_same_thread=False, timeout=15)
+        conn.row_factory = _sq.Row
+        conn.execute("PRAGMA synchronous=NORMAL")
+        self.db.conn = conn
+        self.log("  ↻ 수집 DB 연결을 새로 열었습니다")
+
     def _on_error(self, target_name: str, err):
         self._errors += 1
         backoff = min(60.0, self.min_gap * (2 ** self._errors))
+        import sqlite3 as _sq
+        if isinstance(err, _sq.Error):
+            backoff = min(backoff, 5.0)       # DB 오류는 오래 쉬지 않고 연결을 새로 열어 바로 재시도
+            try:
+                self._reopen_db(err)
+            except Exception as e2:
+                self.log(f"  ! DB 재연결 실패: {e2}")
         self.log(f"  … [{target_name}] 오류 {self._errors}회 → {backoff:.1f}s 백오프: {err}")
         time.sleep(backoff)
         if self._errors >= 3:
