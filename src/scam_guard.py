@@ -74,6 +74,28 @@ def title_suspect(title: str) -> str:
     return ""
 
 
+# 11-11: 낮은 등급이 운영진 행세 닉네임을 쓰는 경우. 우리는 스탭 아이디로만 글을 올리므로 스탭이 아닌 계정이
+# 닉네임에 아래 단어를 쓰고 공지·이벤트 꼴 글을 올리면 사칭으로 본다(등업글 1만9천건 검증: 걸린 44건 전부 사기글)
+NICK_WORD_RE = re.compile(r"(줌마\s?렐라|공\s?지|관\s?리\s?팀|운\s?영|매니[저져])")
+ANN_EMOJI_RE = re.compile(r"^[\W_]*[📢📌✅🔥🚨💰💌🎈🎁🎇🔴]")
+ANN_WORD_RE = re.compile(r"(이벤트|콜라보|공지|안내|개설|스터디|필독|긴급|특별|협업|공식)")
+
+
+def nick_suspect(nick: str, title: str, text_len: int, has_image: bool) -> str:
+    """스탭이 아닌 글쓴이에게만 부른다. 의심 사유(없으면 빈 문자열)."""
+    n = bool(NICK_WORD_RE.search(nick or ""))
+    t = title or ""
+    emo = bool(ANN_EMOJI_RE.search(t))
+    jm = "줌마렐라" in _norm(t).replace(" ", "")
+    if n and (emo or ANN_WORD_RE.search(t) or jm):
+        return f"낮은 등급이 운영진 행세 닉네임('{nick}')으로 공지·이벤트형 글"
+    if n and text_len < 60 and has_image:
+        return f"운영진 행세 닉네임('{nick}')으로 이미지뿐인 글"
+    if jm and emo:
+        return "낮은 등급이 '줌마렐라' 단어를 쓴 공지형 제목"
+    return ""
+
+
 def score(title: str, body: str, comments: list) -> dict:
     """점수·판정 근거. hit=True 면 차단 대상."""
     raw = f"{title}\n{body}\n" + "\n".join(c.content for c in comments if not c.is_deleted)
@@ -232,6 +254,19 @@ class ScamGuard:
                 client.close()
             time.sleep(max(1, LINK_INTERVAL_S - (time.time() - t0)))
 
+    def _staff_keys(self, db, cafe_id: int) -> set:
+        """스탭·매니저 등급 계정의 member_key(5분 캐시). 우리가 올리는 글은 이 계정들이라 사칭 검사에서 뺀다."""
+        c = getattr(self, "_staff_cache", {})
+        hit = c.get(cafe_id)
+        if hit and time.time() - hit[0] < 300:
+            return hit[1]
+        ks = {r[0] for r in db.conn.execute(
+            "SELECT member_key FROM member_cache WHERE cafe_id=? AND (level_name LIKE '%스탭%' OR level_name LIKE '%매니저%' OR level_name LIKE '%운영%')",
+            (cafe_id,))}
+        c[cafe_id] = (time.time(), ks)
+        self._staff_cache = c
+        return ks
+
     def _watchdog(self):
         """감시 스레드가 죽었거나 90초 넘게 한 바퀴도 못 끝내면 새로 띄운다."""
         while True:
@@ -318,7 +353,8 @@ class ScamGuard:
                     continue
                 # 본문이 배너 이미지뿐인 글도 있어 링크 주소를 본문에 붙여 검사
                 hrefs = " ".join(re.findall(r'href="([^"]+)"', b.content_html))
-                ent = self.seen[k] = {"title": b.title, "body": b.content_text + chr(10) + hrefs,
+                ent = self.seen[k] = {"tlen": len(b.content_text or ""), "img": "<img" in (b.content_html or ""),
+                                      "title": b.title, "body": b.content_text + chr(10) + hrefs,
                                       "writer_key": b.member_key or a.member_key,
                                       "nick": b.writer_nickname, "cc": -1,
                                       "html": b.content_html, "write_ts": b.write_ts}
@@ -334,6 +370,11 @@ class ScamGuard:
             if not s["hit"] and ent["writer_key"] and ent["writer_key"] in bad_keys(db, cafe_id):
                 s["hit"] = True
                 s["reasons"].append("이전에 사기글을 쓴 계정")
+            if not s["hit"] and ent["writer_key"] not in self._staff_keys(db, cafe_id):
+                ns = nick_suspect(ent["nick"], ent["title"], ent.get("tlen", 999), ent.get("img", False))
+                if ns:
+                    s["hit"] = True
+                    s["reasons"].append(ns)
             if s["hit"]:
                 self._act(db, client, cafe_id, menu_id, name, a.article_id, ent, comments, s)
         for k in [k for k in self.seen if k[0] == cafe_id and k not in live]:
