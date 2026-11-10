@@ -13,6 +13,7 @@ import json
 import re
 import threading
 import time
+from pathlib import Path
 
 import httpx
 
@@ -176,6 +177,16 @@ def ensure_tables(db: Database):
     db.conn.commit()
 
 
+def _errlog(where: str, e: Exception):
+    """콘솔을 못 보는 환경에서도 감시 오류 원인을 남긴다(data/guard_error.log)."""
+    import traceback
+    try:
+        with open(Path(__file__).resolve().parent.parent / "data" / "guard_error.log", "a", encoding="utf-8") as f:
+            f.write(time.strftime("%m-%d %H:%M:%S") + f" [{where}] " + "".join(traceback.format_exception(e))[-900:] + chr(10))
+    except Exception:
+        pass
+
+
 class ScamGuard:
     def __init__(self, watcher):
         self.w = watcher
@@ -230,9 +241,11 @@ class ScamGuard:
                     except Exception as e:
                         err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
+                        _errlog(name, e)
                 db.set_meta("scam_guard_at", str(int(time.time())))
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")
+                _errlog("loop", e)
             finally:
                 client.close()
             fails = fails + 1 if err else 0
