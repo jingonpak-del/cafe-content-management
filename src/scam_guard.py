@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import sqlite3
 import time
 from pathlib import Path
 
@@ -177,6 +178,9 @@ def ensure_tables(db: Database):
     db.conn.commit()
 
 
+LAST_BEAT = 0.0     # 마지막으로 한 바퀴 끝낸 시각(메모리). server.scam_status 가 읽는다
+
+
 def _errlog(where: str, e: Exception):
     """콘솔을 못 보는 환경에서도 감시 오류 원인을 남긴다(data/guard_error.log)."""
     import traceback
@@ -263,7 +267,12 @@ class ScamGuard:
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
                         _errlog(name, e)
                 self.beat = time.time()
-                db.set_meta("scam_guard_at", str(int(time.time())))
+                global LAST_BEAT
+                LAST_BEAT = self.beat          # 화면 표시는 메모리 기준(DB 가 다른 쓰기에 잠겨도 멈춤으로 보이지 않게)
+                try:
+                    db.set_meta("scam_guard_at", str(int(time.time())))
+                except sqlite3.OperationalError:
+                    pass                       # database is locked — 다음 바퀴에 다시 적는다
             except Exception as e:
                 self.w.log(f"  ! 사기글 감시 루프 오류: {e}")
                 _errlog("loop", e)
