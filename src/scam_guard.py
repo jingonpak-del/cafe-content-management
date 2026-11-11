@@ -131,6 +131,30 @@ def score(title: str, body: str, comments: list) -> dict:
             "invisible": invisible, "reasons": reasons}
 
 
+def member_info(client, cafe_id: int, nick: str, key: str):
+    """카페 스튜디오 회원관리에서 이 계정의 가입일·닉네임 변경 횟수·등급을 읽는다(없으면 None)."""
+    try:
+        r = client.get(f"{cafe_api.STUDIO_API}/cafes/{cafe_id}/members/list",
+                       params={"page": 1, "perPage": 30, "activityStopFilter": "ALL",
+                               "searchType": "NICKNAME", "keyword": nick},
+                       headers=cafe_api._studio_headers(), timeout=12)
+        j = r.json()
+        for m in (j.get("result", j) or {}).get("members", []):
+            if m.get("memberKey") == key:
+                return m
+    except Exception:
+        pass
+    return None
+
+
+def recent_join(info: dict, days: int) -> bool:
+    try:
+        t = time.mktime(time.strptime(info["joinDate"][:19], "%Y-%m-%dT%H:%M:%S"))
+        return time.time() - t < days * 86400
+    except Exception:
+        return False
+
+
 def bad_keys(db: Database, cafe_id: int) -> set:
     """사기글을 쓴 적 있는 계정(처리 내역·수동 정지 기록). 탈퇴했다 다시 와도 같은 계정이면 바로 잡는다."""
     ks = {r[0] for r in db.conn.execute(
@@ -368,6 +392,17 @@ class ScamGuard:
                 continue
             time.sleep(max(1, INTERVAL_S - (time.time() - t0)))
 
+    def _recent_upgrade(self, db, cafe_id, key) -> bool:
+        """이 계정이 최근 7일 안에 이 카페 등업게시판에 글을 쓴 적이 있는가(= 등업한 지 얼마 안 된 계정)."""
+        if not key:
+            return False
+        menus = [m for c, m, _ in GUARD_BOARDS if c == cafe_id]
+        cut = int((time.time() - 7 * 86400) * 1000)
+        r = db.conn.execute(
+            "SELECT 1 FROM articles WHERE cafe_id=? AND member_key=? AND menu_id IN (%s) AND write_ts>? LIMIT 1"
+            % ",".join("?" * len(menus)), (cafe_id, key, *menus, cut)).fetchone()
+        return bool(r)
+
     def _check_board(self, db, client, cafe_id, menu_id, name, identity_only=False):
         arts = cafe_api.fetch_article_list(cafe_id, menu_id=menu_id, per_page=20, client=client)
         now = time.time() * 1000
@@ -405,7 +440,11 @@ class ScamGuard:
             else:
                 comments = ent.get("comments", [])
                 time.sleep(0.4)
-            s = {"hit": False, "reasons": []} if identity_only else score(ent["title"], ent["body"], comments)
+            recent = identity_only and self._recent_upgrade(db, cafe_id, ent["writer_key"])
+            # 등업 직후(7일 안) 계정이 다른 게시판에 쓴 글은 등업글과 같은 사기 점수까지 본다
+            s = score(ent["title"], ent["body"], comments) if (recent or not identity_only) else {"hit": False, "reasons": []}
+            if s["hit"] and recent:
+                s["reasons"].append("등업 직후 계정이 다른 게시판에 쓴 글")
             if not s["hit"] and ent["writer_key"] and ent["writer_key"] in bad_keys(db, cafe_id):
                 s["hit"] = True
                 s["reasons"].append("이전에 사기글을 쓴 계정")
@@ -414,17 +453,30 @@ class ScamGuard:
                 if ns:
                     s["hit"] = True
                     s["reasons"].append(ns)
-                elif identity_only:
+                elif identity_only and not recent:
                     pass
-                elif not FORM_RE.search(ent["body"]):
+                elif not FORM_RE.search(ent["body"]) or identity_only:
                     if CLAIM_RE.search(ent["body"]):
                         s["hit"] = True
                         s["reasons"].append("본문에서 카페 매니저·운영진을 자처(등업 양식 없음)")
-                    elif ent.get("tlen", 999) < 5 and ent.get("img"):
+                    elif not identity_only and ent.get("tlen", 999) < 5 and ent.get("img"):
                         # 사진만 있고 양식·글이 없는 글: 지우되 계정 정지는 사람이 확인한 뒤(60일 검증: 39건 중 정상 1건)
                         s["hit"] = True
                         s["soft"] = True
                         s["reasons"].append("사진만 있고 등업 양식·본문이 없음(확인 요청)")
+            if not s["hit"] and ent["writer_key"] not in self._staff_keys(db, cafe_id) and (
+                    s.get("stock") or s.get("bait") or s.get("links") or s.get("invisible")):
+                # 11-11 실측(사기 27명 vs 정상 36명): 사기 계정은 닉네임 변경 이력이 52%(정상 3%), 전부 소녀렐라·가입 직후.
+                # 의심 신호가 약해도 '닉네임을 바꾼 신규 계정'이면 일단 지우고 정지한 뒤 사람에게 확인을 요청한다.
+                info = ent.get("member")
+                if info is None:
+                    info = ent["member"] = member_info(client, cafe_id, ent["nick"], ent["writer_key"]) or {}
+                if info and (info.get("nicknameChangeCount") or 0) >= 1 and (
+                        info.get("memberLevel") == 1 or recent_join(info, 14)):
+                    s["hit"] = True
+                    s["confirm"] = True
+                    s["reasons"].append("닉네임을 바꾼 신규 계정 + 의심 신호(주식어 %s·유도어 %s·링크 %s) — 확인 요청" % (
+                        len(s.get("stock", [])), len(s.get("bait", [])), len(s.get("links", []))))
             if s["hit"]:
                 if identity_only:
                     comments = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
@@ -437,6 +489,8 @@ class ScamGuard:
 
     def _act(self, db, client, cafe_id, menu_id, name, article_id, ent, comments, s):
         keys = [] if s.get("soft") else accomplices(ent["writer_key"], comments)
+        if s.get("confirm") and ent["writer_key"] and ent["writer_key"] not in keys:
+            keys = [ent["writer_key"]] + keys
         # 삭제하면 원문을 다시 볼 수 없으므로 원본 HTML·작성 정보까지 지우기 전에 저장한다
         snap = {"title": ent["title"], "body": ent["body"][:20000], "html": ent.get("html", ""),
                 "write_ts": ent.get("write_ts"), "writer": ent["nick"], "writer_key": ent["writer_key"],
