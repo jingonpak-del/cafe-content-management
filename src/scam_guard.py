@@ -26,6 +26,10 @@ GUARD_BOARDS = [
     (14793916, 1688, "마산맘"),
     (21031223, 1106, "김해줌마"),
 ]
+# 등업이 아닌 게시판에 운영진 행세 글을 올리는 경우(11-11 CafeManager 가 티키타카페 게시판에 올림): 신원 규칙만 본다
+IDENTITY_BOARDS = [
+    (14793916, 1734, "마산맘 티키타카페"),
+]
 INTERVAL_S = 5               # 등업게시판 목록 확인 간격 (11-09 30초→5초)
 LINK_INTERVAL_S = 30         # 광고 링크 댓글(전체 게시판)은 30초 유지
 BACKOFF_S = 60               # 목록 조회가 연달아 실패하면 잠시 늦춘다(차단 방지)
@@ -330,9 +334,9 @@ class ScamGuard:
             client = httpx.Client(headers=self.w.client.headers, cookies=self.w.client.cookies,
                                   timeout=12.0, follow_redirects=True)
             try:
-                for cafe_id, menu_id, name in GUARD_BOARDS:
+                for cafe_id, menu_id, name in GUARD_BOARDS + IDENTITY_BOARDS:
                     try:
-                        self._check_board(db, client, cafe_id, menu_id, name)
+                        self._check_board(db, client, cafe_id, menu_id, name, identity_only=(cafe_id, menu_id, name) in IDENTITY_BOARDS)
                     except Exception as e:
                         err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
@@ -362,7 +366,7 @@ class ScamGuard:
                 continue
             time.sleep(max(1, INTERVAL_S - (time.time() - t0)))
 
-    def _check_board(self, db, client, cafe_id, menu_id, name):
+    def _check_board(self, db, client, cafe_id, menu_id, name, identity_only=False):
         arts = cafe_api.fetch_article_list(cafe_id, menu_id=menu_id, per_page=20, client=client)
         now = time.time() * 1000
         live = set()
@@ -394,7 +398,7 @@ class ScamGuard:
             else:
                 comments = ent.get("comments", [])
                 time.sleep(0.4)
-            s = score(ent["title"], ent["body"], comments)
+            s = {"hit": False, "reasons": []} if identity_only else score(ent["title"], ent["body"], comments)
             if not s["hit"] and ent["writer_key"] and ent["writer_key"] in bad_keys(db, cafe_id):
                 s["hit"] = True
                 s["reasons"].append("이전에 사기글을 쓴 계정")
@@ -403,6 +407,8 @@ class ScamGuard:
                 if ns:
                     s["hit"] = True
                     s["reasons"].append(ns)
+                elif identity_only:
+                    pass
                 elif not FORM_RE.search(ent["body"]):
                     if CLAIM_RE.search(ent["body"]):
                         s["hit"] = True
