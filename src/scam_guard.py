@@ -132,7 +132,7 @@ def score(title: str, body: str, comments: list) -> dict:
 
 
 def watch_new_members(db, client, w_log=None) -> int:
-    """신규 가입자를 글 쓰기 전에 잡는다: 가입 1일 안 + 닉네임 변경 이력 + 운영진 행세 닉네임이면 활동정지(확인 요청).
+    """신규 가입자를 글 쓰기 전에 잡는다: 가입 3일 안 + 닉네임을 바꿨고 + 운영진 행세 닉네임이면 활동정지(닉네임 변경만으로는 정지 안 함).
     스튜디오 회원 목록 첫 페이지(최신 가입순)를 본다. 이미 처리한 계정은 guard_stop 에 남아 건너뛴다."""
     n = 0
     for cafe_id, _, _ in GUARD_BOARDS:
@@ -145,7 +145,7 @@ def watch_new_members(db, client, w_log=None) -> int:
         for m in (j.get("result", j) or {}).get("members", []):
             if m.get("activityStopped") or m.get("isManager") or m.get("isViceManager") or m.get("isStaff"):
                 continue
-            if (m.get("nicknameChangeCount") or 0) < 1 or not recent_join(m, 1):
+            if (m.get("nicknameChangeCount") or 0) < 1 or not recent_join(m, 3):
                 continue
             nick, key = m.get("nickname") or "", m.get("memberKey") or ""
             if not key or not NICK_WORD_RE.search(nick):
@@ -430,6 +430,17 @@ class ScamGuard:
                 continue
             time.sleep(max(1, INTERVAL_S - (time.time() - t0)))
 
+    def _flag_for_review(self, db, cafe_id, a, ent, s, weak_reason: str):
+        """글은 그대로 두고 /guard '확인 대기'에만 올린다(link_flag 재사용: domain 칸에 '닉변+의심글')."""
+        from . import link_guard
+        link_guard.ensure_tables(db)
+        db.conn.execute(
+            """INSERT OR IGNORE INTO link_flag(cafe_id, article_id, comment_id, menu_id, member_key, nickname,
+                   domain, content, article_title, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            (cafe_id, a.article_id, 0, a.menu_id, ent["writer_key"], ent["nick"], "닉변+의심글",
+             weak_reason + " · " + (ent.get("body") or "")[:200], ent["title"], int(time.time() * 1000)))
+        db.conn.commit()
+
     def _recent_upgrade(self, db, cafe_id, key) -> bool:
         """이 계정이 최근 7일 안에 이 카페 등업게시판에 글을 쓴 적이 있는가(= 등업한 지 얼마 안 된 계정)."""
         if not key:
@@ -511,10 +522,9 @@ class ScamGuard:
                     info = ent["member"] = member_info(client, cafe_id, ent["nick"], ent["writer_key"]) or {}
                 if info and (info.get("nicknameChangeCount") or 0) >= 1 and (
                         info.get("memberLevel") == 1 or recent_join(info, 14)):
-                    s["hit"] = True
-                    s["confirm"] = True
-                    s["reasons"].append("닉네임을 바꾼 신규 계정" + " + 의심 신호(주식어 %s·유도어 %s·링크 %s) — 닉네임 변경 이력으로 확정" % (
-                        len(s.get("stock", [])), len(s.get("bait", [])), len(s.get("links", []))))
+                    # 닉네임 변경만으로는 삭제·정지하지 않는다 — '확인 대기'에 올려 사람이 판단한다
+                    self._flag_for_review(db, cafe_id, a, ent, s, weak_reason=("닉네임 변경 신규 계정 + 의심 신호(주식어 %s·유도어 %s·링크 %s)" % (
+                        len(s.get("stock", [])), len(s.get("bait", [])), len(s.get("links", [])))))
             if s["hit"]:
                 if identity_only:
                     comments = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
