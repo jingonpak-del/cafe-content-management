@@ -131,6 +131,38 @@ def score(title: str, body: str, comments: list) -> dict:
             "invisible": invisible, "reasons": reasons}
 
 
+def watch_new_members(db, client, w_log=None) -> int:
+    """신규 가입자를 글 쓰기 전에 잡는다: 가입 1일 안 + 닉네임 변경 이력 + 운영진 행세 닉네임이면 활동정지(확인 요청).
+    스튜디오 회원 목록 첫 페이지(최신 가입순)를 본다. 이미 처리한 계정은 guard_stop 에 남아 건너뛴다."""
+    n = 0
+    for cafe_id, _, _ in GUARD_BOARDS:
+        r = client.get(f"{cafe_api.STUDIO_API}/cafes/{cafe_id}/members/list",
+                       params={"page": 1, "perPage": 50, "activityStopFilter": "ALL"},
+                       headers=cafe_api._studio_headers(), timeout=12)
+        if r.status_code in (401, 403):
+            raise cafe_api.StudioAuthRequired(r.text[:200])
+        j = r.json()
+        for m in (j.get("result", j) or {}).get("members", []):
+            if m.get("activityStopped") or m.get("isManager") or m.get("isViceManager") or m.get("isStaff"):
+                continue
+            if (m.get("nicknameChangeCount") or 0) < 1 or not recent_join(m, 1):
+                continue
+            nick, key = m.get("nickname") or "", m.get("memberKey") or ""
+            if not key or not NICK_WORD_RE.search(nick):
+                continue
+            if db.conn.execute("SELECT 1 FROM guard_stop WHERE cafe_id=? AND member_key=?", (cafe_id, key)).fetchone():
+                continue
+            ok, fails = stop_members(client, cafe_id, [key])
+            db.conn.execute(
+                "INSERT OR IGNORE INTO guard_stop(cafe_id, member_key, nickname, reason, created_at) VALUES(?,?,?,?,?)",
+                (cafe_id, key, nick, "신규 가입자가 운영진 행세 닉네임으로 변경(글 쓰기 전) — 확인 요청", int(time.time() * 1000)))
+            db.conn.commit()
+            n += 1
+            if w_log:
+                w_log(f"  🚫 신규 가입자 정지({ok}) [{cafe_id}] {nick}")
+    return n
+
+
 def member_info(client, cafe_id: int, nick: str, key: str):
     """카페 스튜디오 회원관리에서 이 계정의 가입일·닉네임 변경 횟수·등급을 읽는다(없으면 None)."""
     try:
@@ -367,6 +399,12 @@ class ScamGuard:
                         err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
                         _errlog(name, e, db.conn)
+                if time.time() - getattr(self, "_nm_at", 0) >= 30:
+                    self._nm_at = time.time()
+                    try:
+                        watch_new_members(db, client, self.w.log)
+                    except Exception as e:
+                        _errlog("new-members", e, db.conn)
                 self.beat = time.time()
                 global LAST_BEAT
                 LAST_BEAT = self.beat          # 화면 표시는 메모리 기준(DB 가 다른 쓰기에 잠겨도 멈춤으로 보이지 않게)
