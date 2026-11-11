@@ -464,8 +464,8 @@ class ScamGuard:
                         s["hit"] = True
                         s["soft"] = True
                         s["reasons"].append("사진만 있고 등업 양식·본문이 없음(확인 요청)")
-            if not s["hit"] and ent["writer_key"] not in self._staff_keys(db, cafe_id) and (
-                    s.get("stock") or s.get("bait") or s.get("links") or s.get("invisible")):
+            weak = bool(s.get("stock") or s.get("bait") or s.get("links") or s.get("invisible"))
+            if not s["hit"] and ent["writer_key"] not in self._staff_keys(db, cafe_id) and (weak or not identity_only):
                 # 11-11 실측(사기 27명 vs 정상 36명): 사기 계정은 닉네임 변경 이력이 52%(정상 3%), 전부 소녀렐라·가입 직후.
                 # 의심 신호가 약해도 '닉네임을 바꾼 신규 계정'이면 일단 지우고 정지한 뒤 사람에게 확인을 요청한다.
                 info = ent.get("member")
@@ -475,8 +475,9 @@ class ScamGuard:
                         info.get("memberLevel") == 1 or recent_join(info, 14)):
                     s["hit"] = True
                     s["confirm"] = True
-                    s["reasons"].append("닉네임을 바꾼 신규 계정 + 의심 신호(주식어 %s·유도어 %s·링크 %s) — 확인 요청" % (
-                        len(s.get("stock", [])), len(s.get("bait", [])), len(s.get("links", []))))
+                    s["reasons"].append("닉네임을 바꾼 신규 계정" + (" + 의심 신호(주식어 %s·유도어 %s·링크 %s)" % (
+                        len(s.get("stock", [])), len(s.get("bait", [])), len(s.get("links", []))) if weak else "(등업게시판)")
+                        + " — 확인 요청")
             if s["hit"]:
                 if identity_only:
                     comments = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
