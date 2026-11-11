@@ -208,12 +208,35 @@ def ensure_tables(db: Database):
 LAST_BEAT = 0.0     # 마지막으로 한 바퀴 끝낸 시각(메모리). server.scam_status 가 읽는다
 
 
-def _errlog(where: str, e: Exception):
+def lock_diag(conn=None) -> str:
+    """'database is locked' 원인 추적용: 이 연결이 열린 트랜잭션을 쥐었는지, 모든 스레드가 지금 어느 줄인지, WAL 크기."""
+    import sys, traceback
+    out = []
+    try:
+        out.append("in_transaction=%s" % (conn.in_transaction if conn is not None else "?"))
+    except Exception as e:
+        out.append("in_transaction=오류 %s" % e)
+    try:
+        wal = Path(__file__).resolve().parent.parent / "data" / "gamsi.db-wal"
+        out.append("wal=%dMB" % (wal.stat().st_size // 1048576))
+    except Exception:
+        pass
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for tid, fr in sys._current_frames().items():
+        st = [f"{Path(x.filename).name}:{x.lineno}({x.name})" for x in traceback.extract_stack(fr) if "src" in x.filename.replace(chr(92), "/")]
+        if st:
+            out.append("  %s: %s" % (names.get(tid, tid), " > ".join(st[-3:])))
+    return chr(10).join(out)
+
+
+def _errlog(where: str, e: Exception, conn=None):
     """콘솔을 못 보는 환경에서도 감시 오류 원인을 남긴다(data/guard_error.log)."""
     import traceback
     try:
         with open(Path(__file__).resolve().parent.parent / "data" / "guard_error.log", "a", encoding="utf-8") as f:
             f.write(time.strftime("%m-%d %H:%M:%S") + f" [{where}] " + "".join(traceback.format_exception(e))[-900:] + chr(10))
+            if isinstance(e, sqlite3.OperationalError):
+                f.write(lock_diag(conn) + chr(10))
     except Exception:
         pass
 
@@ -313,14 +336,14 @@ class ScamGuard:
                     except Exception as e:
                         err = True
                         self.w.log(f"  ! 사기글 감시 실패 [{name}]: {e}")
-                        _errlog(name, e)
+                        _errlog(name, e, db.conn)
                 self.beat = time.time()
                 global LAST_BEAT
                 LAST_BEAT = self.beat          # 화면 표시는 메모리 기준(DB 가 다른 쓰기에 잠겨도 멈춤으로 보이지 않게)
                 try:
                     db.set_meta("scam_guard_at", str(int(time.time())))
                 except sqlite3.OperationalError as e:
-                    _errlog("heartbeat", e)    # database is locked — 연결을 새로 열어 다음 바퀴에 다시 적는다
+                    _errlog("heartbeat", e, db.conn)    # database is locked — 연결을 새로 열어 다음 바퀴에 다시 적는다
                     try:
                         db.close()
                     except Exception:

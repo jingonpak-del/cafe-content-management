@@ -324,6 +324,8 @@ class Watcher:
         try:
             with open(_P(self.db.path).parent / "watcher_error.log", "a", encoding="utf-8") as f:
                 f.write(time.strftime("%m-%d %H:%M:%S") + f" {type(err).__name__}: {err}" + chr(10))
+                from .scam_guard import lock_diag
+                f.write(lock_diag(self.db.conn) + chr(10))
         except Exception:
             pass
         try:
