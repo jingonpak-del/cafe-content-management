@@ -225,13 +225,13 @@ async function stopSuspects() {
 
 async function decide(action) {
   if (!sel?.key) return;
-  if (action === 'approve' && !confirm(`${sel.nick} 의 해당 링크 댓글을 모두 삭제하고 활동정지할까요?`)) return;
-  if (action === 'delete' && !confirm(`${sel.nick} 의 해당 링크 댓글만 삭제할까요? (활동정지는 안 함)`)) return;
+  if (action === 'approve' && !confirm(`${sel.nick} 의 해당 링크 댓글·의심 글을 모두 삭제하고 활동정지할까요?`)) return;
+  if (action === 'delete' && !confirm(`${sel.nick} 의 해당 링크 댓글·의심 글만 삭제할까요? (활동정지는 안 함)`)) return;
   const r = await fetch('/api/linkspam/flag', {method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({cafe_id: sel.cafe_id, member_key: sel.member_key, action})}).then(r => r.json());
   if (r.error) return alert(r.error);
-  const msg = action === 'delete' ? `✅ ${sel.nick}: 댓글 삭제 ${r.deleted}개${r.fail ? ' · 실패 ' + r.fail : ''} (정지 안 함)`
-    : action === 'approve' ? `✅ ${sel.nick}: 댓글 삭제 ${r.deleted}개${r.fail ? ' · 실패 ' + r.fail : ''} · 정지 ${r.stopped ? 'O' : 'X'}` : `${sel.nick}: 그대로 둠`;
+  const msg = action === 'delete' ? `✅ ${sel.nick}: 댓글 삭제 ${r.deleted}개${r.articles_deleted ? ' · 글 삭제 ' + r.articles_deleted + '개' : ''}${r.fail ? ' · 실패 ' + r.fail : ''} (정지 안 함)`
+    : action === 'approve' ? `✅ ${sel.nick}: 댓글 삭제 ${r.deleted}개${r.articles_deleted ? ' · 글 삭제 ' + r.articles_deleted + '개' : ''}${r.fail ? ' · 실패 ' + r.fail : ''} · 정지 ${r.stopped ? 'O' : 'X'}` : `${sel.nick}: 그대로 둠`;
   sel = null;
   await load();
   document.getElementById('bar').innerHTML = `<span class="t">${esc(msg)}</span>`;
