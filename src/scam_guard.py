@@ -27,8 +27,10 @@ GUARD_BOARDS = [
     (21031223, 1106, "김해줌마"),
 ]
 # 등업이 아닌 게시판에 운영진 행세 글을 올리는 경우(11-11 CafeManager 가 티키타카페 게시판에 올림): 신원 규칙만 본다
+# 전체글(menu 0)을 본다 — 등업글로 등급을 올린 뒤 다른 게시판에 올리는 수법 대응(11-11)
 IDENTITY_BOARDS = [
-    (14793916, 1734, "마산맘 티키타카페"),
+    (14793916, 0, "마산맘 전체글"),
+    (21031223, 0, "김해줌마 전체글"),
 ]
 INTERVAL_S = 5               # 등업게시판 목록 확인 간격 (11-09 30초→5초)
 LINK_INTERVAL_S = 30         # 광고 링크 댓글(전체 게시판)은 30초 유지
@@ -373,6 +375,8 @@ class ScamGuard:
         for a in arts:
             if a.is_notice or now - a.write_ts > RECHECK_MIN * 60000:
                 continue
+            if identity_only and (cafe_id, a.menu_id) in [(c, m) for c, m, _ in GUARD_BOARDS]:
+                continue          # 등업게시판은 본 검사가 따로 본다
             k = (cafe_id, a.article_id)
             live.add(k)
             if db.conn.execute("SELECT 1 FROM scam_action WHERE cafe_id=? AND article_id=?", k).fetchone():
@@ -380,7 +384,7 @@ class ScamGuard:
             ent = self.seen.get(k)
             if ent is None:
                 try:
-                    b = cafe_api.fetch_article_body(cafe_id, a.article_id, menu_id=menu_id, client=client)
+                    b = cafe_api.fetch_article_body(cafe_id, a.article_id, menu_id=a.menu_id or menu_id, client=client)
                 except cafe_api.ArticleGoneError:
                     continue
                 # 본문이 배너 이미지뿐인 글도 있어 링크 주소를 본문에 붙여 검사
@@ -389,10 +393,13 @@ class ScamGuard:
                                       "title": b.title, "body": b.content_text + chr(10) + hrefs,
                                       "writer_key": b.member_key or a.member_key,
                                       "nick": b.writer_nickname, "cc": -1,
-                                      "html": b.content_html, "write_ts": b.write_ts}
+                                      "html": b.content_html, "write_ts": b.write_ts, "pass": menu_id,
+                                      "menu": a.menu_id}
                 time.sleep(0.4)
             comments = []
-            if a.comment_count != ent["cc"]:
+            if identity_only:
+                comments = ent.get("comments", [])
+            elif a.comment_count != ent["cc"]:
                 comments = ent["comments"] = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
                 ent["cc"] = a.comment_count
             else:
@@ -419,8 +426,13 @@ class ScamGuard:
                         s["soft"] = True
                         s["reasons"].append("사진만 있고 등업 양식·본문이 없음(확인 요청)")
             if s["hit"]:
-                self._act(db, client, cafe_id, menu_id, name, a.article_id, ent, comments, s)
-        for k in [k for k in self.seen if k[0] == cafe_id and k not in live]:
+                if identity_only:
+                    comments = cafe_api.fetch_comments(cafe_id, a.article_id, client=client, max_pages=3)
+                    menu_id_a = a.menu_id or menu_id
+                else:
+                    menu_id_a = menu_id
+                self._act(db, client, cafe_id, menu_id_a, name, a.article_id, ent, comments, s)
+        for k in [k for k in self.seen if k[0] == cafe_id and k not in live and self.seen[k].get("pass", menu_id) == menu_id]:
             self.seen.pop(k, None)
 
     def _act(self, db, client, cafe_id, menu_id, name, article_id, ent, comments, s):
