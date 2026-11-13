@@ -87,6 +87,7 @@ ANN_EMOJI_RE = re.compile(r"^[\W_]*[📢📌✅🔥🚨💰💌🎈🎁🎇🔴]
 ANN_WORD_RE = re.compile(r"(이벤트|콜라보|공지|안내|개설|스터디|필독|긴급|특별|협업|공식|지침|방침|전달드립)")
 
 # 등업게시판 기본 양식(스탭이 본문 맨 위에 넣어 두는 안내문). 정상 글은 이 양식 아래에 사진+글을 쓴다
+BODY_LINK_RE = re.compile(r"(https?://(?!cafe\.naver\.com)|www\.|[a-z0-9-]+\.(?:co\.kr|com|net|kr|io|me|co)/)", re.I)
 FORM_RE = re.compile(r"양식\s?확인|등업\s?방법")
 # 본문에서 직접 카페 운영진이라고 자처하는 말(11-11 'CafeManager' 글: "안녕하세요. 카페 매니저 멘토 모건입니다")
 CLAIM_RE = re.compile(r"(카페\s?매니[저져]|운영진|공지팀|매니[저져]\s?[가-힣]{2,4}\s?입니다)")
@@ -508,6 +509,11 @@ class ScamGuard:
                     if CLAIM_RE.search(ent["body"]):
                         s["hit"] = True
                         s["reasons"].append("본문에서 카페 매니저·운영진을 자처(등업 양식 없음)")
+                    elif not identity_only and BODY_LINK_RE.search(INVISIBLE_RE.sub("", ent["body"])):
+                        # 11-13 7566007: 등업 양식 없이 본문에 링크만 있는 글(알바 모집). 30일 83건 중 정상글은 거의 없음 — 지우되 정지는 사람이 확인
+                        s["hit"] = True
+                        s["soft"] = True
+                        s["reasons"].append("등업 양식 없이 본문에 링크(삭제만, 정지는 확인 요청)")
                     elif not identity_only and ent.get("tlen", 999) < 5 and ent.get("img"):
                         # 사진만 있고 양식·글이 없는 글: 지우되 계정 정지는 사람이 확인한 뒤(60일 검증: 39건 중 정상 1건)
                         s["hit"] = True
